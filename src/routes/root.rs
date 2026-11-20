@@ -45,7 +45,15 @@ pub fn app(db_conn: Arc<Database>) -> Router {
             get(handler::list_sessions).delete(handler::revoke_all_sessions),
         )
         .route("/sessions/{id}", delete(handler::revoke_session))
-        .route("/users/{id}/status", patch(handler::update_user_status));
+        .route("/users/{id}/status", patch(handler::update_user_status))
+        // Milestone 2: lookups, catalog, assets, custody.
+        .merge(crate::modules::lookups::router())
+        .merge(crate::modules::products::router())
+        .merge(crate::modules::assets::router())
+        // Milestone 3: accessories, consumables, licenses.
+        .merge(crate::modules::accessories::router())
+        .merge(crate::modules::consumables::router())
+        .merge(crate::modules::licenses::router());
 
     Router::<Arc<Database>>::new()
         .nest("/v1/api", api)

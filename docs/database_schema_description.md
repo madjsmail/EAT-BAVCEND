@@ -1,0 +1,185 @@
+# Database Schema — Description
+
+Companion to `database_schema_mermaid_erd.md`. Migrations:
+`0001_init.sql` (identity/RBAC/audit), `0002_seed_rbac.sql` (permission + role
+seed), `0003_core_lookups_assets.sql` (lookups, catalog, assets, custody).
+
+## Conventions
+
+- All primary keys are `UUID DEFAULT gen_random_uuid()`.
+- Every tenant table has `organization_id UUID NOT NULL REFERENCES organizations(id) ON DELETE CASCADE`; **queries must always filter on it**.
+- `created_at` / `updated_at` are `TIMESTAMPTZ NOT NULL DEFAULT now()`; updates set `updated_at = now()` explicitly.
+- Localized names live in `<entity>_translations` tables — never in JSON.
+  - Columns: `id`, `<entity>_id FK ... ON DELETE CASCADE`, `locale TEXT CHECK (locale IN ('en','fr','ar'))`, `name TEXT CHECK (btrim(name) <> '')`.
+  - `UNIQUE (<entity>_id, locale)` and an index on the parent FK.
+- Deletes of referenced lookups are blocked (`ON DELETE RESTRICT`); deleting a
+  translation row or the parent lookup cascades its translations.
+
+## Identity & RBAC (Milestone 1)
+
+| Table | Constraints / rules |
+| --- | --- |
+| `organizations` | `slug` unique; soft-free (hard delete cascades all tenants data). |
+| `permissions` | Global, `code` unique (`assets.read`, `lookups.write`, ...). |
+| `roles` | `code` unique; `organization_id` NULL = system role shared by tenants; `is_system` marks seeded roles. |
+| `role_permissions` | PK `(role_id, permission_id)`. |
+| `users` | `email = lower(email)`; `UNIQUE (organization_id, email)`; `status IN ('invited','active','suspended')`; `preferred_locale` default `'en'`; `location_id` FK → `locations` (home location, `ON DELETE SET NULL`). |
+| `user_roles` | `UNIQUE (organization_id, user_id, role_id)`. |
+| `invitations` | `token_hash` unique (SHA-256 only); `status IN ('pending','accepted','expired','revoked')`; at most one `pending` row per `(organization_id, email)` via partial unique index. |
+| `sessions` | `token_hash` unique; `revoked_at` NULL = live; expiry checked in the auth extractor. |
+| `audit_logs` | Append-only. `organization_id`/`actor_user_id` nullable (pre-auth/system events); `metadata JSONB`; indexed by `(organization_id, created_at DESC)`. |
+
+## Lookups
+
+### `departments` / `department_translations`
+`code` `^[A-Z0-9]{1,8}$`, `UNIQUE (organization_id, code)`. Optional `email`,
+`phone_number`. Code feeds asset tags.
+
+### `categories` / `category_translations`
+`code` `^[A-Z0-9]{1,8}$`, `UNIQUE (organization_id, code)`.
+`category_type IN ('accessory','asset','consumable','component')`.
+`skip_checkout_confirmation_emails` BOOLEAN default FALSE. `icon_url`.
+
+### `manufacturers` / `manufacturer_translations`
+No natural code — matched by English name at seed time. Optional `url`,
+`support_url`, `support_phone`, `support_email`, `notes`, `logo_url`.
+
+### `statuses` / `status_translations`
+- `code` `^[a-z0-9_]{1,32}$`, `UNIQUE (organization_id, code)` — stable machine key used by custody transitions (`deployed`, `ready_to_deploy`).
+- `status_type IN ('deployable','deployed','undeployable','pending','archived')` — fallback when a code is renamed.
+- `color_code ~ '^#[0-9A-Fa-f]{6}$'`, default `#6B7280`.
+- `show_in_nav` drives the navigation badge; list responses include `assets_count`.
+
+### `locations` / `location_translations`
+- `code` `^[A-Z0-9-]{1,16}$`, `UNIQUE (organization_id, code)`.
+- `parent_id` self-FK `ON DELETE RESTRICT`, `CHECK (parent_id <> id)`. Deeper
+  cycles are rejected in `repo::check_location_parent` with a recursive CTE.
+- `location_type IN ('site','building','floor','room','shelf')`, default `site`.
+- `country_code` ISO 3166-1 alpha-2 (`^[A-Z]{2}$`), `latitude ∈ [-90,90]`,
+  `longitude ∈ [-180,180]`, `is_active` default TRUE.
+- `manager_user_id` must belong to the same organization (checked in repo).
+
+### `suppliers` / `supplier_translations`
+No code. `contact_name`, `email`, `phone_number`, `address`, `url`, `notes`.
+
+### `depreciation_models` / `depreciation_model_translations`
+`months INTEGER > 0`, `floor_value NUMERIC(14,2) >= 0`.
+
+## Catalog
+
+### `products` / `product_translations`
+- `code` `^[A-Z0-9]{1,8}$`, `UNIQUE (organization_id, code)`.
+- `category_id NOT NULL` (`RESTRICT`); `manufacturer_id`,
+  `depreciation_model_id`, `default_supplier_id` optional (`SET NULL`).
+- `eol_type IN ('fixed_date','months_from_purchase','months_from_warranty','individual')`,
+  default `individual`; `CHECK (eol_type <> 'fixed_date' OR eol_date IS NOT NULL)`.
+- `default_purchase_cost NUMERIC(14,2) >= 0`, `default_currency` `^[A-Z]{3}$`
+  default `USD`.
+- `min_quantity >= 0`; `chip`, `operating_system`, `model_code`, `notes`,
+  `image_url`, `is_archived`.
+- `custom_fields_json JSONB DEFAULT '{}'` (per-tenant extensions) and
+  `specs_json JSONB DEFAULT '{}'` (typed hardware specs: CPU/RAM/IMEI-capable
+  devices, furniture dimensions, vehicle plate...).
+
+## Assets
+
+### `assets`
+| Column | Rule |
+| --- | --- |
+| `asset_tag` | `UNIQUE (organization_id, asset_tag)`; generated as `DEPT.CAT.PROD.NNNN` when omitted. |
+| `product_id` | NOT NULL, `RESTRICT`. |
+| `status_id` | NOT NULL, `RESTRICT`; defaults to the org's `deployable` status. |
+| `department_id` | NOT NULL, `RESTRICT`. |
+| `supplier_id`, `location_id`, `assigned_user_id` | Optional, `SET NULL`. |
+| `name` | NOT NULL, `btrim(name) <> ''`. |
+| `serial_number` | Unique per org case-insensitively, ignoring blanks (partial index). |
+| `imei_1` | Unique per org when non-blank; `imei_2` free. |
+| `warranty_date`, `purchase_date` | `DATE` nullable. |
+| `purchase_cost` | `NUMERIC(14,2) >= 0`; `currency` `^[A-Z]{3}$` default `USD`. |
+| `schedule_audit` | `TIMESTAMPTZ` nullable = next scheduled audit. |
+| `mdm_enrolled` | BOOLEAN default FALSE. |
+| `order_number`, `notes`, `image_url` | Optional text. |
+
+### `asset_sequences`
+PK `(organization_id, department_id, product_id)`, `last_value INTEGER`.
+Incremented atomically with
+`INSERT ... ON CONFLICT DO UPDATE SET last_value = asset_sequences.last_value + 1 RETURNING last_value`,
+so concurrent creates never reuse a tag.
+
+### `asset_assignments`
+Append-only custody log:
+`action IN ('assign','return','transfer')`, `assigned_to_user_id`,
+`from_user_id`, `from_location_id`/`to_location_id`,
+`from_department_id`/`to_department_id`, `from_status_id`/`to_status_id`,
+`notes`, `performed_by_user_id`, `created_at`.
+Indexed by `(organization_id, asset_id, created_at DESC)`.
+
+## Business rules enforced in code
+
+1. **Assign**: exactly one of `user_id` / `location_id`. Assigning to a user
+   requires `users.location_id`; the asset inherits it, otherwise 400
+   `location_required`. Status defaults to `deployed`.
+2. **Return**: clears `assigned_user_id`; status defaults to `ready_to_deploy`.
+3. **Transfer**: moves location, optionally department/status.
+4. Every transition locks the asset `FOR UPDATE`, writes `asset_assignments`
+   **and** `audit_logs` in one transaction, then commits.
+5. Seeded permissions: `lookups.read/write`, `products.read/write`,
+   `assets.read/write/assign`. Admin gets all; manager all except
+   `assets.write`; technician read + assign; viewer read.
+
+## Accessories, consumables & licenses (Milestone 3)
+
+Migration: `20260101000004_accessories_consumables_licenses.sql`.
+
+### `accessories` / `accessory_translations`
+- Optional links: `category_id`, `manufacturer_id`, `supplier_id`, `location_id` (`ON DELETE SET NULL`).
+- `total_quantity >= 0`; `CHECK (available_quantity BETWEEN 0 AND total_quantity)`.
+- `min_quantity >= 0`, `purchase_cost >= 0`, `currency` ISO-4217, `is_archived`.
+- Creating a row sets `available_quantity = total_quantity`; increasing `total_quantity`
+  adds the delta to `available_quantity`; decreasing is rejected below the assigned
+  count (`total_quantity - available_quantity`).
+
+### `accessory_assignments`
+- `quantity > 0`; `returned_quantity BETWEEN 0 AND quantity`.
+- `CHECK (num_nonnulls(assigned_to_user_id, asset_id) = 1)` — exactly one target
+  (employee **or** parent asset).
+- `assigned_by_user_id`, `returned_by_user_id`, `returned_at`.
+- Assignment: lock accessory row, require `available_quantity >= quantity`, decrement,
+  insert row. Return (partial allowed): lock assignment row, add units back, set
+  `returned_at` when fully returned. Both write `audit_logs`.
+
+### `consumables` / `consumable_translations`
+- Same optional lookups as accessories; `quantity_on_hand >= 0`, `min_stock_alert >= 0`.
+- Low stock when `quantity_on_hand <= min_stock_alert` (computed in SQL, exposed as
+  `is_low_stock`, filterable with `?low_stock=true`, dedicated `/consumables/alerts`).
+
+### `consumable_transactions`
+- Append-only ledger. `transaction_type IN ('restock','issue','adjustment')`.
+- `CHECK (transaction_type = 'adjustment' OR quantity > 0)`; adjustments carry a
+  signed delta and may be negative.
+- Optional `user_id` (issue target; assets are not a consumable target),
+  `performed_by_user_id`.
+- Application rule: `SELECT quantity_on_hand ... FOR UPDATE`, reject when the resulting
+  balance would be negative, write the transaction and the new balance in one transaction.
+- Creating a consumable with opening stock inserts a `restock` row ("Opening stock").
+
+### `licenses` / `license_translations`
+- `license_type IN ('named','concurrent','subscription','perpetual')` (default `named`).
+- `total_seats >= 0`, optional `expiration_date`, `purchase_date`, `purchase_cost`,
+  `product_key`, `order_number`, `is_archived`.
+- `active_seats` = count of seats with `revoked_at IS NULL`; `available_seats` derived.
+- Expiry buckets computed from `expiration_date - CURRENT_DATE`: `expired` (<0), `30`,
+  `60`, `90` (inclusive windows), otherwise null.
+
+### `license_seats`
+- `CHECK (num_nonnulls(user_id, asset_id) = 1)` — employee **or** asset.
+- `status` is derived from `revoked_at`; revocation keeps the row for history.
+- Partial unique indexes guarantee one live seat per `(license, user)` and
+  `(license, asset)`.
+- Allocation locks the license row, counts active seats, and rejects with 409 when
+  `active_seats >= total_seats`. Lowering `total_seats` below `active_seats` is a 400.
+
+### Permissions
+`accessories.read/write/assign`, `consumables.read/write/issue`,
+`licenses.read/write/assign`.
+Admin: all. Manager: all. Technician: read + assign/issue. Viewer: read.

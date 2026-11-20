@@ -5,6 +5,7 @@ You are working strictly inside the **Rust Backend API** (`backend/`).
 - **NEVER** modify frontend files (`web/`), Docker infrastructure, or unrelated modules.
 - **ONE VERTICAL SLICE AT A TIME:** Only touch files needed for the single requested feature (e.g., `migrations/` + `src/modules/<feature>/`).
 - **NO SPECULATIVE REFACTORING:** Do not rename existing structs, change crate versions in `Cargo.toml`, or rewrite shared utilities unless explicitly instructed.
+- **BRANCH FIRST:** Create a feature branch (e.g. `feature/milestone-N-<scope>`) before the first edit of any task; never work directly on `main`.
 - **STOP ON 2 COMPILE ERRORS:** If `cargo check` fails twice on the same issue, stop immediately, output the exact `rustc` error, and ask for direction instead of looping.
 
 ---
