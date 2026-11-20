@@ -55,6 +55,14 @@ impl From<sqlx::Error> for ApiError {
             sqlx::Error::Database(db) if db.is_unique_violation() => {
                 ApiError::Conflict("Resource already exists".to_string())
             }
+            sqlx::Error::Database(db) if db.is_foreign_key_violation() => {
+                ApiError::Conflict("Resource is still referenced by other records".to_string())
+            }
+            sqlx::Error::Database(db) if db.is_check_violation() => ApiError::BadRequest {
+                field: None,
+                code: "constraint".to_string(),
+                message: "A value violates a database constraint".to_string(),
+            },
             _ => ApiError::Db(e),
         }
     }

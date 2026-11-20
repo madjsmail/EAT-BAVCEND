@@ -42,6 +42,17 @@ async fn main() {
         return;
     }
 
+    // `cargo run -- seed --org-slug acme` loads the default lookups/catalog.
+    if std::env::args().nth(1).as_deref() == Some("seed") {
+        if let Err(e) =
+            rust_api::seed::run(&db_connection, std::env::args().skip(2).collect()).await
+        {
+            error!("Seed failed: {}", e);
+            exit(1);
+        }
+        return;
+    }
+
     let app_url = parameter::get("APP_URL").unwrap_or_else(|e| {
         error!("{}", e);
         exit(1);

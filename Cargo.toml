@@ -13,7 +13,7 @@ hex = "0.4.3"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 sha2 = "0.10.9"
-sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "migrate", "macros", "chrono", "time", "postgres", "uuid"] }
+sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "migrate", "macros", "chrono", "time", "postgres", "uuid", "rust_decimal"] }
 thiserror = "2.0.18"
 tokio = { version = "1.49.0", features = ["full"] }
 tower = { version = "0.5.3", features = ["full"] }
@@ -22,6 +22,10 @@ uuid = { version = "1.19.0", features = ["v4", "serde"] }
 time = "0.3.45"
 log = "0.4.29"
 log4rs = "1.4.0"
+qrcode = { version = "0.15.0", features = ["svg"] }
+barcoders = "2.0.0"
+rust_decimal = { version = "1.43.0", features = ["serde"] }
+image = { version = "0.25.10", default-features = false, features = ["png"] }
 
 [dev-dependencies]
 http-body-util = "0.1.3"
