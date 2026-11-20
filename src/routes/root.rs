@@ -23,8 +23,10 @@ async fn health(State(db): State<Arc<Database>>) -> ApiResponse<String> {
 }
 
 pub fn routes(db_conn: Arc<Database>) -> IntoMakeService<Router> {
+    let api = Router::<Arc<Database>>::new().route("/health", get(health));
+
     Router::<Arc<Database>>::new()
-        .route("/health", get(health))
+        .nest("/v1/api", api)
         .with_state(db_conn)
         .layer(TraceLayer::new_for_http())
         .into_make_service()
