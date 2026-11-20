@@ -261,6 +261,15 @@ pub async fn create_asset(
     req: &CreateAssetRequest,
 ) -> Result<AssetRow> {
     let mut tx = pool.begin().await?;
+    audit::bind_actor(
+        &mut tx,
+        audit::Actor {
+            user_id: Some(actor),
+            ip_address: ip.as_deref(),
+            user_agent: None,
+        },
+    )
+    .await?;
 
     ensure_org_ref(&mut tx, "products", org, req.product_id, "product_id").await?;
     ensure_org_ref(
@@ -332,25 +341,6 @@ pub async fn create_asset(
     .fetch_one(&mut *tx)
     .await?;
 
-    audit::insert_tx(
-        &mut tx,
-        audit::Entry {
-            organization_id: Some(org),
-            actor_user_id: Some(actor),
-            action: "asset.create",
-            entity_type: "asset",
-            entity_id: Some(id),
-            metadata: serde_json::json!({
-                "asset_tag": asset_tag,
-                "product_id": req.product_id,
-                "department_id": req.department_id,
-                "status_id": status_id,
-            }),
-            ip_address: ip.as_deref(),
-        },
-    )
-    .await?;
-
     tx.commit().await?;
     get_asset(pool, org, locale, id).await
 }
@@ -366,6 +356,15 @@ pub async fn update_asset(
 ) -> Result<AssetRow> {
     let current = get_asset(pool, org, locale, id).await?;
     let mut tx = pool.begin().await?;
+    audit::bind_actor(
+        &mut tx,
+        audit::Actor {
+            user_id: Some(actor),
+            ip_address: ip.as_deref(),
+            user_agent: None,
+        },
+    )
+    .await?;
 
     if let Some(product_id) = req.product_id {
         ensure_org_ref(&mut tx, "products", org, product_id, "product_id").await?;
@@ -426,20 +425,6 @@ pub async fn update_asset(
     .execute(&mut *tx)
     .await?;
 
-    audit::insert_tx(
-        &mut tx,
-        audit::Entry {
-            organization_id: Some(org),
-            actor_user_id: Some(actor),
-            action: "asset.update",
-            entity_type: "asset",
-            entity_id: Some(id),
-            metadata: serde_json::json!({ "asset_tag": current.asset_tag }),
-            ip_address: ip.as_deref(),
-        },
-    )
-    .await?;
-
     tx.commit().await?;
     get_asset(pool, org, locale, id).await
 }
@@ -452,6 +437,15 @@ pub async fn delete_asset(
     id: Uuid,
 ) -> Result<()> {
     let mut tx = pool.begin().await?;
+    audit::bind_actor(
+        &mut tx,
+        audit::Actor {
+            user_id: Some(actor),
+            ip_address: ip.as_deref(),
+            user_agent: None,
+        },
+    )
+    .await?;
     let tag: Option<String> = sqlx::query_scalar(
         "DELETE FROM assets WHERE id = $1 AND organization_id = $2 RETURNING asset_tag",
     )
@@ -459,23 +453,9 @@ pub async fn delete_asset(
     .bind(org)
     .fetch_optional(&mut *tx)
     .await?;
-    let Some(tag) = tag else {
+    let Some(_tag) = tag else {
         return Err(ApiError::NotFound("Asset"));
     };
-
-    audit::insert_tx(
-        &mut tx,
-        audit::Entry {
-            organization_id: Some(org),
-            actor_user_id: Some(actor),
-            action: "asset.delete",
-            entity_type: "asset",
-            entity_id: Some(id),
-            metadata: serde_json::json!({ "asset_tag": tag }),
-            ip_address: ip.as_deref(),
-        },
-    )
-    .await?;
 
     tx.commit().await?;
     Ok(())
@@ -609,6 +589,15 @@ pub async fn assign_asset(
     }
 
     let mut tx = pool.begin().await?;
+    audit::bind_actor(
+        &mut tx,
+        audit::Actor {
+            user_id: Some(actor),
+            ip_address: ip.as_deref(),
+            user_agent: None,
+        },
+    )
+    .await?;
     let from = lock_asset(&mut tx, org, asset_id).await?;
 
     let (to_user_id, to_location_id) = match req.user_id {
@@ -693,7 +682,7 @@ pub async fn assign_asset(
         actor,
         ip,
         asset_id,
-        "asset.assign",
+        "assigned",
         &from,
         status_id,
         to_location_id,
@@ -717,6 +706,15 @@ pub async fn return_asset(
     req: &ReturnAssetRequest,
 ) -> Result<AssetRow> {
     let mut tx = pool.begin().await?;
+    audit::bind_actor(
+        &mut tx,
+        audit::Actor {
+            user_id: Some(actor),
+            ip_address: ip.as_deref(),
+            user_agent: None,
+        },
+    )
+    .await?;
     let from = lock_asset(&mut tx, org, asset_id).await?;
 
     if let Some(location_id) = req.location_id {
@@ -773,7 +771,7 @@ pub async fn return_asset(
         actor,
         ip,
         asset_id,
-        "asset.return",
+        "returned",
         &from,
         status_id,
         to_location_id,
@@ -797,6 +795,15 @@ pub async fn transfer_asset(
     req: &TransferAssetRequest,
 ) -> Result<AssetRow> {
     let mut tx = pool.begin().await?;
+    audit::bind_actor(
+        &mut tx,
+        audit::Actor {
+            user_id: Some(actor),
+            ip_address: ip.as_deref(),
+            user_agent: None,
+        },
+    )
+    .await?;
     let from = lock_asset(&mut tx, org, asset_id).await?;
 
     ensure_org_ref(&mut tx, "locations", org, req.location_id, "location_id").await?;
@@ -846,7 +853,7 @@ pub async fn transfer_asset(
         actor,
         ip,
         asset_id,
-        "asset.transfer",
+        "transferred",
         &from,
         status_id,
         Some(req.location_id),

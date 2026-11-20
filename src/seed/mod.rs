@@ -753,6 +753,393 @@ async fn upsert_license(
     Ok(id)
 }
 
+const DEMO_PASSWORD: &str = "Demo1234!";
+
+/// `(email, first name, last name, role code)`.
+const DEMO_USERS: [(&str, &str, &str, &str); 4] = [
+    ("admin@demo.local", "Ada", "Lovelace", "admin"),
+    ("manager@demo.local", "Grace", "Hopper", "manager"),
+    ("tech@demo.local", "Linus", "Torvalds", "technician"),
+    ("viewer@demo.local", "Sam", "Carter", "viewer"),
+];
+
+/// `(asset_tag, product index, status code, department code, assignee, warranty offset, purchase offset, cost)`
+const DEMO_ASSETS: [(&str, usize, &str, &str, Option<usize>, Option<i32>, i32, &str); 8] = [
+    ("LAP-0001", 0, "deployed", "IT", Some(0), Some(-40), 900, "1450.00"),
+    ("LAP-0002", 0, "deployed", "FIN", Some(1), Some(15), 620, "1450.00"),
+    ("LAP-0003", 0, "ready_to_deploy", "IT", None, Some(45), 300, "1450.00"),
+    ("LAP-0004", 0, "being_repaired", "COMM", None, Some(75), 430, "1450.00"),
+    ("TLPH-0001", 1, "deployed", "COMM", Some(2), Some(200), 540, "280.00"),
+    ("TLPH-0002", 1, "broken", "COMM", None, None, 540, "280.00"),
+    ("HDST-0001", 2, "deployed", "IT", Some(3), Some(25), 210, "210.00"),
+    ("HDST-0002", 2, "ready_to_deploy", "HR", None, Some(55), 120, "210.00"),
+];
+
+async fn seed_demo_users(
+    conn: &mut PgConnection,
+    org: Uuid,
+    location_id: Uuid,
+) -> Result<Vec<Uuid>, sqlx::Error> {
+    let hash =
+        crate::service::hash_password(DEMO_PASSWORD).map_err(|e| sqlx::Error::Protocol(e))?;
+    let mut ids = Vec::with_capacity(DEMO_USERS.len());
+
+    for (email, first_name, last_name, role_code) in DEMO_USERS.iter() {
+        sqlx::query(
+            "INSERT INTO users
+                (organization_id, first_name, last_name, email, status, preferred_locale,
+                 password_hash, location_id)
+             VALUES ($1, $2, $3, $4, 'active', 'en', $5, $6)
+             ON CONFLICT (organization_id, email) DO NOTHING",
+        )
+        .bind(org)
+        .bind(first_name)
+        .bind(last_name)
+        .bind(email)
+        .bind(&hash)
+        .bind(location_id)
+        .execute(&mut *conn)
+        .await?;
+
+        let id: Uuid =
+            sqlx::query_scalar("SELECT id FROM users WHERE organization_id = $1 AND email = $2")
+                .bind(org)
+                .bind(email)
+                .fetch_one(&mut *conn)
+                .await?;
+        ids.push(id);
+
+        sqlx::query(
+            "INSERT INTO user_roles (organization_id, user_id, role_id)
+             SELECT $1, $2, id FROM roles WHERE code = $3
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(org)
+        .bind(id)
+        .bind(role_code)
+        .execute(&mut *conn)
+        .await?;
+    }
+
+    Ok(ids)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn seed_demo_assets(
+    conn: &mut PgConnection,
+    org: Uuid,
+    location_id: Uuid,
+    laptop_product: Uuid,
+    phone_product: Uuid,
+    headset_product: Uuid,
+    users: &[Uuid],
+) -> Result<(), sqlx::Error> {
+    let products = [laptop_product, phone_product, headset_product];
+    let names = [
+        "Dell Latitude 5440",
+        "Cisco IP Phone 8841",
+        "Jabra Evolve2 65",
+    ];
+
+    for (tag, product_idx, status_code, department_code, assignee, warranty_offset, purchase_offset, cost) in
+        DEMO_ASSETS.iter()
+    {
+        let assigned_user_id = assignee.and_then(|idx| users.get(idx).copied());
+        sqlx::query(
+            "INSERT INTO assets
+                (organization_id, asset_tag, product_id, status_id, location_id, department_id,
+                 assigned_user_id, name, serial_number, warranty_date, purchase_date,
+                 purchase_cost, currency)
+             VALUES ($1, $2, $3,
+                     (SELECT id FROM statuses WHERE organization_id = $1 AND code = $4),
+                     $5,
+                     (SELECT id FROM departments WHERE organization_id = $1 AND code = $6),
+                     $7, $8, $9,
+                     CASE WHEN $10::int IS NULL THEN NULL ELSE CURRENT_DATE + $10::int END,
+                     CURRENT_DATE - $11::int, $12::numeric, 'USD')
+             ON CONFLICT (organization_id, asset_tag) DO NOTHING",
+        )
+        .bind(org)
+        .bind(tag)
+        .bind(products[*product_idx])
+        .bind(status_code)
+        .bind(location_id)
+        .bind(department_code)
+        .bind(assigned_user_id)
+        .bind(format!("{} ({})", names[*product_idx], tag))
+        .bind(format!("SN-{tag}-{org}"))
+        .bind(warranty_offset)
+        .bind(purchase_offset)
+        .bind(cost)
+        .execute(&mut *conn)
+        .await?;
+    }
+    Ok(())
+}
+
+async fn seed_demo_attachments(
+    conn: &mut PgConnection,
+    org: Uuid,
+    users: &[Uuid],
+) -> Result<(), sqlx::Error> {
+    let asset_ids: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM assets WHERE organization_id = $1 ORDER BY asset_tag LIMIT 3",
+    )
+    .bind(org)
+    .fetch_all(&mut *conn)
+    .await?;
+
+    let files = [
+        ("invoice", "dell-invoice-2025.pdf", "application/pdf", 482_112i64),
+        ("warranty", "warranty-certificate.pdf", "application/pdf", 128_004i64),
+        ("damage_photo", "fan-damage.jpg", "image/jpeg", 1_204_992i64),
+    ];
+
+    for (index, (category, file_name, mime_type, size)) in files.iter().enumerate() {
+        let Some(asset_id) = asset_ids.get(index) else {
+            break;
+        };
+        let storage_key = format!("{org}/asset/{asset_id}/seed-{index}-{file_name}");
+        sqlx::query(
+            "INSERT INTO attachments
+                (organization_id, attachable_type, attachable_id, category, file_name,
+                 mime_type, size_bytes, storage_key, uploaded_by_user_id)
+             VALUES ($1, 'asset', $2, $3, $4, $5, $6, $7, $8)
+             ON CONFLICT (storage_key) DO NOTHING",
+        )
+        .bind(org)
+        .bind(asset_id)
+        .bind(category)
+        .bind(file_name)
+        .bind(mime_type)
+        .bind(size)
+        .bind(&storage_key)
+        .bind(users.get(index % users.len()).copied())
+        .execute(&mut *conn)
+        .await?;
+    }
+    Ok(())
+}
+
+/// One open ticket on `LAP-0004` and one completed ticket on `LAP-0003`, created
+/// through the real repository so asset statuses move and audits are emitted.
+async fn seed_maintenance_workflow(
+    pool: &PgPool,
+    org: Uuid,
+    actor: Uuid,
+) -> Result<Vec<Uuid>, sqlx::Error> {
+    use crate::modules::maintenances::dto::CreateMaintenanceRequest;
+    use crate::modules::maintenances::repo as maintenance_repo;
+
+    let existing: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM asset_maintenances WHERE organization_id = $1 ORDER BY created_at",
+    )
+    .bind(org)
+    .fetch_all(pool)
+    .await?;
+    if !existing.is_empty() {
+        return Ok(existing);
+    }
+
+    let assets: Vec<(Uuid, String)> = sqlx::query_as(
+        "SELECT id, asset_tag FROM assets WHERE organization_id = $1
+         AND asset_tag IN ('LAP-0003', 'LAP-0004') ORDER BY asset_tag",
+    )
+    .bind(org)
+    .fetch_all(pool)
+    .await?;
+    let Some((repair_asset, _)) = assets.iter().find(|(_, tag)| tag == "LAP-0004") else {
+        return Ok(Vec::new());
+    };
+    let Some((complete_asset, _)) = assets.iter().find(|(_, tag)| tag == "LAP-0003") else {
+        return Ok(Vec::new());
+    };
+
+    let no_ip: Option<String> = None;
+    let mut ids = Vec::new();
+
+    let open_ticket = maintenance_repo::create_maintenance(
+        pool,
+        org,
+        "en",
+        actor,
+        &no_ip,
+        Some("seed"),
+        &CreateMaintenanceRequest {
+            asset_id: *repair_asset,
+            title: "Laptop fan rattling and overheating".to_string(),
+            description: Some(
+                "User reports loud fan noise and thermal throttling under load.".to_string(),
+            ),
+            maintenance_type: Some("corrective".to_string()),
+            priority: Some("high".to_string()),
+            supplier_id: None,
+            rma_reference: Some("RMA-2026-0042".to_string()),
+            assigned_to_user_id: None,
+            scheduled_at: None,
+            cost: None,
+            currency: None,
+        },
+    )
+    .await
+    .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
+    ids.push(open_ticket.id);
+
+    let completed_ticket = maintenance_repo::create_maintenance(
+        pool,
+        org,
+        "en",
+        actor,
+        &no_ip,
+        Some("seed"),
+        &CreateMaintenanceRequest {
+            asset_id: *complete_asset,
+            title: "Quarterly preventive inspection".to_string(),
+            description: Some("Standard 90-day cleaning and thermal paste check.".to_string()),
+            maintenance_type: Some("preventive".to_string()),
+            priority: Some("medium".to_string()),
+            supplier_id: None,
+            rma_reference: None,
+            assigned_to_user_id: None,
+            scheduled_at: None,
+            cost: None,
+            currency: None,
+        },
+    )
+    .await
+    .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
+
+    let completed = maintenance_repo::close_maintenance(
+        pool,
+        org,
+        "en",
+        actor,
+        &no_ip,
+        Some("seed"),
+        completed_ticket.id,
+        true,
+        Some("Dust removed, thermal paste replaced, temperatures back to 62C under load."),
+        Some(Decimal::new(8500, 2)),
+        None,
+    )
+    .await
+    .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
+    ids.push(completed.id);
+
+    Ok(ids)
+}
+
+/// 55 backdated audit rows so the explorer timeline has content on day one.
+async fn seed_audit_history(
+    pool: &PgPool,
+    org: Uuid,
+    users: &[Uuid],
+    maintenance_ids: &[Uuid],
+) -> Result<usize, sqlx::Error> {
+    let existing: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_logs
+         WHERE organization_id = $1 AND metadata->>'source' = 'demo_history'",
+    )
+    .bind(org)
+    .fetch_one(pool)
+    .await?;
+    if existing >= 50 {
+        return Ok(0);
+    }
+
+    let asset_ids: Vec<Uuid> =
+        sqlx::query_scalar("SELECT id FROM assets WHERE organization_id = $1 ORDER BY asset_tag")
+            .bind(org)
+            .fetch_all(pool)
+            .await?;
+
+    let events = [
+        "created",
+        "updated",
+        "assigned",
+        "updated",
+        "returned",
+        "transferred",
+        "maintenance_opened",
+        "maintenance_closed",
+    ];
+    let entity_types = ["asset", "product", "license", "consumable", "accessory", "maintenance"];
+
+    for index in 0..55usize {
+        let event = events[index % events.len()];
+        let entity_type = entity_types[(index * 5 + 2) % entity_types.len()];
+        let entity_id = match entity_type {
+            "asset" => asset_ids.get(index % asset_ids.len().max(1)).copied(),
+            "maintenance" => maintenance_ids
+                .get(index % maintenance_ids.len().max(1))
+                .copied(),
+            _ => None,
+        };
+        let actor = users.get(index % users.len()).copied();
+        let hours_ago = (index as i64) * 3 + 2;
+
+        let (old_values, new_values, diff) = match event {
+            "created" => (
+                None,
+                Some(json!({ "status": "open", "created_at": "seed" })),
+                None,
+            ),
+            "deleted" => (Some(json!({ "status": "archived" })), None, None),
+            "updated" => {
+                let delta = match entity_type {
+                    "product" => json!({ "default_purchase_cost": { "old": 1450.00, "new": 1499.00 } }),
+                    "license" => json!({ "total_seats": { "old": 10, "new": 12 } }),
+                    "consumable" => json!({ "quantity_on_hand": { "old": 12, "new": 10 } }),
+                    "accessory" => json!({ "available_quantity": { "old": 5, "new": 4 } }),
+                    "maintenance" => json!({ "priority": { "old": "medium", "new": "high" } }),
+                    _ => json!({ "status_id": { "old": "pending", "new": "deployed" } }),
+                };
+                (
+                    Some(json!({ "field_count": 1 })),
+                    Some(json!({ "field_count": 1 })),
+                    Some(delta),
+                )
+            }
+            "assigned" | "returned" | "transferred" => (
+                Some(json!({ "assigned_user_id": null })),
+                Some(json!({ "assigned_user_id": "demo" })),
+                Some(json!({ "assigned_user_id": { "old": null, "new": "demo" } })),
+            ),
+            _ => (None, None, None),
+        };
+
+        let metadata = json!({
+            "source": "demo_history",
+            "note": format!("Seeded history row #{index}"),
+        });
+        let ip = format!("10.0.{}.{}", index % 40, 10 + index % 200);
+
+        sqlx::query(
+            "INSERT INTO audit_logs
+                (organization_id, actor_user_id, action, entity_type, entity_id, metadata,
+                 ip_address, actor_user_agent, old_values, new_values, diff, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+                     now() - make_interval(hours => $12::int))",
+        )
+        .bind(org)
+        .bind(actor)
+        .bind(event)
+        .bind(entity_type)
+        .bind(entity_id)
+        .bind(metadata)
+        .bind(ip)
+        .bind("SeedAgent/1.0 (demo data)")
+        .bind(old_values)
+        .bind(new_values)
+        .bind(diff)
+        .bind(hours_ago as i32)
+        .execute(pool)
+        .await?;
+    }
+
+    Ok(55)
+}
+
 async fn organization_id(pool: &PgPool, slug: &str) -> Result<Uuid, sqlx::Error> {
     sqlx::query_scalar::<_, Uuid>("SELECT id FROM organizations WHERE slug = $1")
         .bind(slug)
@@ -937,7 +1324,7 @@ pub async fn run(db: &Database, args: Vec<String>) -> Result<(), String> {
         Some(manufacturer_ids[3]),
     );
 
-    upsert_product(
+    let laptop_product = upsert_product(
         &mut tx,
         org,
         "LAP",
@@ -955,7 +1342,7 @@ pub async fn run(db: &Database, args: Vec<String>) -> Result<(), String> {
     .await
     .map_err(|e| e.to_string())?;
 
-    upsert_product(
+    let phone_product = upsert_product(
         &mut tx,
         org,
         "TLPH",
@@ -973,7 +1360,7 @@ pub async fn run(db: &Database, args: Vec<String>) -> Result<(), String> {
     .await
     .map_err(|e| e.to_string())?;
 
-    upsert_product(
+    let headset_product = upsert_product(
         &mut tx,
         org,
         "HDST",
@@ -1007,12 +1394,38 @@ pub async fn run(db: &Database, args: Vec<String>) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
     }
 
+    // Demo dataset: users, assets, attachment metadata. Maintenance tickets
+    // and the audit history are created after the commit because they reuse
+    // the domain repositories (and therefore exercise the real transitions).
+    let hq = location_ids
+        .iter()
+        .find(|(code, _)| **code == "HQ")
+        .map(|(_, id)| *id)
+        .ok_or("Missing HQ location")?;
+    let demo_users = seed_demo_users(&mut tx, org, hq)
+        .await
+        .map_err(|e| e.to_string())?;
+    seed_demo_assets(
+        &mut tx,
+        org,
+        hq,
+        laptop_product,
+        phone_product,
+        headset_product,
+        &demo_users,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    seed_demo_attachments(&mut tx, org, &demo_users)
+        .await
+        .map_err(|e| e.to_string())?;
+
     audit::insert_tx(
         &mut tx,
         audit::Entry {
             organization_id: Some(org),
             actor_user_id: None,
-            action: "lookups.seeded",
+            action: "seeded",
             entity_type: "organization",
             entity_id: Some(org),
             metadata: json!({ "source": "default_seed" }),
@@ -1023,6 +1436,14 @@ pub async fn run(db: &Database, args: Vec<String>) -> Result<(), String> {
     .map_err(|e| e.to_string())?;
 
     tx.commit().await.map_err(|e| e.to_string())?;
+
+    let maintenance_ids = seed_maintenance_workflow(pool, org, demo_users[0])
+        .await
+        .map_err(|e| e.to_string())?;
+    let history_rows = seed_audit_history(pool, org, &demo_users, &maintenance_ids)
+        .await
+        .map_err(|e| e.to_string())?;
+    println!("demo_audit_history_rows={history_rows}");
 
     for table in [
         "departments",
@@ -1036,6 +1457,11 @@ pub async fn run(db: &Database, args: Vec<String>) -> Result<(), String> {
         "accessories",
         "consumables",
         "licenses",
+        "users",
+        "assets",
+        "asset_maintenances",
+        "attachments",
+        "audit_logs",
     ] {
         let count = sqlx::query_scalar::<_, i64>(&format!(
             "SELECT count(*) FROM {table} WHERE organization_id = $1"

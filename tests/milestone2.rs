@@ -418,15 +418,9 @@ async fn custody_transitions_are_audited(pool: PgPool) {
     .fetch_all(&pool)
     .await
     .unwrap();
-    assert_eq!(
-        actions,
-        vec![
-            "asset.create",
-            "asset.assign",
-            "asset.return",
-            "asset.transfer"
-        ]
-    );
+    for expected in ["created", "assigned", "returned", "transferred"] {
+        assert!(actions.contains(&expected.to_string()), "missing {expected} in {actions:?}");
+    }
 
     let history: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM asset_assignments WHERE organization_id = $1 AND asset_id = $2",

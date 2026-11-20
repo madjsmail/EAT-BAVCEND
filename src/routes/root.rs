@@ -53,7 +53,14 @@ pub fn app(db_conn: Arc<Database>) -> Router {
         // Milestone 3: accessories, consumables, licenses.
         .merge(crate::modules::accessories::router())
         .merge(crate::modules::consumables::router())
-        .merge(crate::modules::licenses::router());
+        .merge(crate::modules::licenses::router())
+        // Milestone 4: maintenance & RMA.
+        .merge(crate::modules::maintenances::router())
+        .merge(crate::modules::attachments::router())
+        // Milestone 4: Audit Log Explorer.
+        .merge(crate::modules::audit::router())
+        // Milestone 4: executive dashboard aggregations.
+        .merge(crate::modules::dashboard::router());
 
     Router::<Arc<Database>>::new()
         .nest("/v1/api", api)

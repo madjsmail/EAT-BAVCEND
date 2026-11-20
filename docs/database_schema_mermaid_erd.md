@@ -456,3 +456,89 @@ erDiagram
         timestamptz revoked_at
     }
 ```
+
+## Milestone 4 — maintenance, attachments, audit explorer
+
+```mermaid
+erDiagram
+    organizations ||--o{ asset_maintenances : "owns"
+    organizations ||--o{ attachments : "owns"
+    organizations ||--o{ audit_logs : "records"
+
+    assets ||--o{ asset_maintenances : "repaired via"
+    suppliers ||--o{ asset_maintenances : "services"
+    users ||--o{ asset_maintenances : "assigned to"
+    statuses ||--o{ asset_maintenances : "previous state"
+    users ||--o{ asset_maintenances : "created by"
+
+    assets ||--o{ attachments : "attachable"
+    products ||--o{ attachments : "attachable"
+    asset_maintenances ||--o{ attachments : "attachable"
+    licenses ||--o{ attachments : "attachable"
+    accessories ||--o{ attachments : "attachable"
+    consumables ||--o{ attachments : "attachable"
+    users ||--o{ attachments : "uploaded by"
+
+    users ||--o{ audit_logs : "acts"
+
+    asset_maintenances {
+        uuid id PK
+        uuid organization_id FK
+        uuid asset_id FK
+        text title
+        text maintenance_type
+        text status
+        text priority
+        uuid supplier_id FK
+        text rma_reference
+        uuid assigned_to_user_id FK
+        uuid previous_status_id FK
+        timestamptz reported_at
+        timestamptz scheduled_at
+        timestamptz started_at
+        timestamptz completed_at
+        text completion_notes
+        numeric cost
+        text currency
+        uuid created_by_user_id FK
+    }
+    attachments {
+        uuid id PK
+        uuid organization_id FK
+        text attachable_type
+        uuid attachable_id
+        text category
+        text file_name
+        text mime_type
+        bigint size_bytes
+        text storage_key
+        uuid uploaded_by_user_id FK
+        timestamptz created_at
+    }
+    audit_logs {
+        uuid id PK
+        uuid organization_id FK
+        uuid actor_user_id FK
+        text actor_user_agent
+        text action
+        text entity_type
+        uuid entity_id
+        jsonb old_values
+        jsonb new_values
+        jsonb diff
+        jsonb metadata
+        text ip_address
+        timestamptz created_at
+    }
+```
+
+Relationship rules (Milestone 4):
+
+- `attachments` is polymorphic: `(attachable_type, attachable_id)` points at one
+  of `asset|product|maintenance|license|accessory|consumable`. The pair is
+  verified inside the organization before the row is written; there is no FK.
+- `asset_maintenances` allows at most one `open`/`in_progress` ticket per asset
+  (partial unique index), and `previous_status_id` records the status to
+  restore on completion/cancel.
+- `audit_logs` remains append-only; `old_values`, `new_values` and `diff` are
+  filled by the `audit_row_change()` trigger on every tracked table.

@@ -201,6 +201,15 @@ pub async fn create_accessory(
     req: &CreateAccessoryRequest,
 ) -> Result<AccessoryRow> {
     let mut tx = pool.begin().await?;
+    audit::bind_actor(
+        &mut tx,
+        audit::Actor {
+            user_id: Some(actor),
+            ip_address: ip.as_deref(),
+            user_agent: None,
+        },
+    )
+    .await?;
     check_refs(
         &mut tx,
         org,
@@ -240,19 +249,6 @@ pub async fn create_accessory(
 
     replace_translations(&mut tx, id, &req.translations).await?;
 
-    audit::insert_tx(
-        &mut tx,
-        audit::Entry {
-            organization_id: Some(org),
-            actor_user_id: Some(actor),
-            action: "accessory.create",
-            entity_type: "accessory",
-            entity_id: Some(id),
-            metadata: serde_json::json!({ "total_quantity": req.total_quantity }),
-            ip_address: ip.as_deref(),
-        },
-    )
-    .await?;
 
     tx.commit().await?;
     get_accessory(pool, org, locale, id).await
@@ -269,6 +265,15 @@ pub async fn update_accessory(
 ) -> Result<AccessoryRow> {
     let current = get_accessory(pool, org, locale, id).await?;
     let mut tx = pool.begin().await?;
+    audit::bind_actor(
+        &mut tx,
+        audit::Actor {
+            user_id: Some(actor),
+            ip_address: ip.as_deref(),
+            user_agent: None,
+        },
+    )
+    .await?;
 
     if let Some(Some(category_id)) = req.category_id {
         check_refs(&mut tx, org, Some(category_id), None, None, None).await?;
@@ -333,19 +338,6 @@ pub async fn update_accessory(
     .execute(&mut *tx)
     .await?;
 
-    audit::insert_tx(
-        &mut tx,
-        audit::Entry {
-            organization_id: Some(org),
-            actor_user_id: Some(actor),
-            action: "accessory.update",
-            entity_type: "accessory",
-            entity_id: Some(id),
-            metadata: serde_json::json!({ "total_quantity": total_quantity }),
-            ip_address: ip.as_deref(),
-        },
-    )
-    .await?;
 
     tx.commit().await?;
     get_accessory(pool, org, locale, id).await
@@ -359,6 +351,15 @@ pub async fn delete_accessory(
     id: Uuid,
 ) -> Result<()> {
     let mut tx = pool.begin().await?;
+    audit::bind_actor(
+        &mut tx,
+        audit::Actor {
+            user_id: Some(actor),
+            ip_address: ip.as_deref(),
+            user_agent: None,
+        },
+    )
+    .await?;
     let done = sqlx::query("DELETE FROM accessories WHERE id = $1 AND organization_id = $2")
         .bind(id)
         .bind(org)
@@ -367,19 +368,6 @@ pub async fn delete_accessory(
     if done.rows_affected() == 0 {
         return Err(ApiError::NotFound("Accessory"));
     }
-    audit::insert_tx(
-        &mut tx,
-        audit::Entry {
-            organization_id: Some(org),
-            actor_user_id: Some(actor),
-            action: "accessory.delete",
-            entity_type: "accessory",
-            entity_id: Some(id),
-            metadata: serde_json::json!({}),
-            ip_address: ip.as_deref(),
-        },
-    )
-    .await?;
     tx.commit().await?;
     Ok(())
 }
@@ -530,6 +518,15 @@ pub async fn assign_accessory(
     }
 
     let mut tx = pool.begin().await?;
+    audit::bind_actor(
+        &mut tx,
+        audit::Actor {
+            user_id: Some(actor),
+            ip_address: ip.as_deref(),
+            user_agent: None,
+        },
+    )
+    .await?;
 
     let available: Option<i32> = sqlx::query_scalar(
         "SELECT available_quantity FROM accessories
@@ -584,7 +581,7 @@ pub async fn assign_accessory(
         audit::Entry {
             organization_id: Some(org),
             actor_user_id: Some(actor),
-            action: "accessory.assign",
+            action: "assigned",
             entity_type: "accessory",
             entity_id: Some(accessory_id),
             metadata: serde_json::json!({
@@ -614,6 +611,15 @@ pub async fn return_accessory(
     req: &ReturnAccessoryRequest,
 ) -> Result<AssignmentRow> {
     let mut tx = pool.begin().await?;
+    audit::bind_actor(
+        &mut tx,
+        audit::Actor {
+            user_id: Some(actor),
+            ip_address: ip.as_deref(),
+            user_agent: None,
+        },
+    )
+    .await?;
 
     let row: Option<(i32, i32)> = sqlx::query_as(
         "SELECT quantity, returned_quantity FROM accessory_assignments
@@ -672,7 +678,7 @@ pub async fn return_accessory(
         audit::Entry {
             organization_id: Some(org),
             actor_user_id: Some(actor),
-            action: "accessory.return",
+            action: "returned",
             entity_type: "accessory",
             entity_id: Some(accessory_id),
             metadata: serde_json::json!({
