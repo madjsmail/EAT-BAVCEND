@@ -21,6 +21,10 @@ pub enum ApiError {
     },
     #[error("{0}")]
     Conflict(String),
+    /// The email exists in more than one organization, so the tenant cannot be
+    /// inferred from the credentials alone.
+    #[error("{0}")]
+    AmbiguousTenant(String),
     #[error("{0}")]
     Internal(String),
     #[error(transparent)]
@@ -99,6 +103,12 @@ impl IntoResponse for ApiError {
                 message,
             } => (StatusCode::BAD_REQUEST, "invalid", message, field),
             ApiError::Conflict(message) => (StatusCode::CONFLICT, "conflict", message, None),
+            ApiError::AmbiguousTenant(message) => (
+                StatusCode::CONFLICT,
+                "ambiguous_organization",
+                message,
+                Some("organization_slug".to_string()),
+            ),
             ApiError::Internal(message) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal_error",

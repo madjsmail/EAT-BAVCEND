@@ -5,9 +5,12 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Password login. `organization_slug` is deprecated: the tenant is resolved
+/// from the user record, and the slug is only needed when the same email exists
+/// in more than one organization.
 #[derive(Debug, Deserialize)]
 pub struct LoginRequest {
-    pub organization_slug: String,
+    pub organization_slug: Option<String>,
     pub email: String,
     pub password: String,
 }
@@ -45,9 +48,11 @@ impl From<crate::entity::User> for UserProfile {
     }
 }
 
+/// Email-first sign-in request; `organization_slug` is optional for the same
+/// reason as in `LoginRequest`.
 #[derive(Debug, Deserialize)]
 pub struct LoginRequestBody {
-    pub organization_slug: String,
+    pub organization_slug: Option<String>,
     pub email: String,
 }
 

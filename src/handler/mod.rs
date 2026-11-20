@@ -100,12 +100,44 @@ pub async fn login(
 ) -> Result<impl IntoResponse, ApiError> {
     let pool = db.get_pool();
     let email = normalize_email(&payload.email);
-    let slug = normalize_slug(&payload.organization_slug);
     let ip = client_ip(&headers);
 
-    let org = organization::find_by_slug(pool, &slug)
-        .await?
-        .ok_or(ApiError::Unauthorized)?;
+    // The client sends credentials only: the tenant comes from the user record.
+    // An explicit slug is still honoured (and required for a shared email).
+    let slug = payload.organization_slug.as_deref().map(normalize_slug);
+    let org = match slug.as_deref() {
+        Some(slug) if !slug.is_empty() => organization::find_by_slug(pool, slug)
+            .await?
+            .ok_or(ApiError::Unauthorized)?,
+        _ => {
+            let mut matches = user::find_by_email_any_org(pool, &email).await?;
+            if matches.len() > 1 {
+                return Err(ApiError::AmbiguousTenant(
+                    "This email belongs to more than one organization; include organization_slug"
+                        .to_string(),
+                ));
+            }
+            let Some(user) = matches.pop() else {
+                audit::insert(
+                    pool,
+                    audit::Entry {
+                        organization_id: None,
+                        actor_user_id: None,
+                        action: "login_failed",
+                        entity_type: "user",
+                        entity_id: None,
+                        metadata: json!({ "email": email, "reason": "unknown_user" }),
+                        ip_address: ip.as_deref(),
+                    },
+                )
+                .await?;
+                return Err(ApiError::Unauthorized);
+            };
+            organization::find_by_id(pool, user.organization_id)
+                .await?
+                .ok_or(ApiError::Unauthorized)?
+        }
+    };
 
     let found = user::find_by_email(pool, org.id, &email).await?;
 
@@ -199,16 +231,39 @@ pub async fn login_request(
 ) -> Result<ApiResponse<serde_json::Value>, ApiError> {
     let pool = db.get_pool();
     let email = normalize_email(&payload.email);
-    let slug = normalize_slug(&payload.organization_slug);
 
-    let Some(org) = organization::find_by_slug(pool, &slug).await? else {
-        return Ok(ApiResponse::success_with_message(
-            json!({}),
-            GENERIC_LOGIN_MESSAGE,
-        ));
+    // Same tenant resolution as `login`, but every failure stays generic so the
+    // endpoint cannot be used to probe which emails exist.
+    let slug = payload.organization_slug.as_deref().map(normalize_slug);
+    let user = match slug.as_deref() {
+        Some(slug) if !slug.is_empty() => {
+            let Some(org) = organization::find_by_slug(pool, slug).await? else {
+                return Ok(ApiResponse::success_with_message(
+                    json!({}),
+                    GENERIC_LOGIN_MESSAGE,
+                ));
+            };
+            user::find_by_email(pool, org.id, &email).await?
+        }
+        _ => {
+            let mut matches = user::find_by_email_any_org(pool, &email).await?;
+            if matches.len() != 1 {
+                if matches.len() > 1 {
+                    log::warn!("login_request matches several organizations; staying generic");
+                }
+                return Ok(ApiResponse::success_with_message(
+                    json!({}),
+                    GENERIC_LOGIN_MESSAGE,
+                ));
+            }
+            matches.pop()
+        }
     };
 
-    if let Some(user) = user::find_by_email(pool, org.id, &email).await? {
+    if let Some(user) = user {
+        let org = organization::find_by_id(pool, user.organization_id)
+            .await?
+            .ok_or(ApiError::Unauthorized)?;
         if matches!(user.status.as_str(), "invited" | "active") {
             let purpose = if user.status == "invited" { "invite" } else { "login" };
             let hours = if purpose == "invite" { 72 } else { 1 };

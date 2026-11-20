@@ -50,6 +50,18 @@ pub mod user {
             .await
     }
 
+    /// Email lookup without a tenant: login resolves the organization from the
+    /// user record. At most two rows are returned so callers can detect an
+    /// email that exists in more than one organization.
+    pub async fn find_by_email_any_org(pool: &PgPool, email: &str) -> sqlx::Result<Vec<User>> {
+        sqlx::query_as::<_, User>(
+            "SELECT * FROM users WHERE email = $1 AND deleted_at IS NULL ORDER BY created_at, id LIMIT 2",
+        )
+        .bind(email)
+        .fetch_all(pool)
+        .await
+    }
+
     pub async fn find_by_id(
         pool: &PgPool,
         organization_id: Uuid,

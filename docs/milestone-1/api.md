@@ -40,11 +40,16 @@ Authentication is a cookie named `eat_session`:
 
 ## POST /auth/login
 
-Login is tenant-aware because emails are unique **per organization**.
+The tenant is resolved from the authenticated user, so the client only sends
+credentials. Email is expected to be unique across the install (it is unique
+**per organization** in the schema); `organization_slug` is optional and only
+needed to disambiguate the same email registered in more than one organization.
 
 ```json
-{ "organization_slug": "acme", "email": "admin@acme.test", "password": "Passw0rd!" }
+{ "email": "admin@acme.test", "password": "Passw0rd!" }
 ```
+
+An explicit slug is still honoured: `{ "organization_slug": "acme", … }`.
 
 `200` – sets the cookie:
 
@@ -75,8 +80,9 @@ Login is tenant-aware because emails are unique **per organization**.
 ```
 
 `401 unauthorized` for unknown organization, unknown user, wrong password or
-inactive account (deliberately indistinguishable). Attempts are audited as
-`auth.login_failed`.
+inactive account (deliberately indistinguishable). `409 ambiguous_organization`
+when `organization_slug` is omitted and the email exists in more than one
+organization. Attempts are audited as `auth.login_failed`.
 
 ## POST /auth/logout
 
@@ -277,4 +283,5 @@ sequenceDiagram
 | 403 | `forbidden` | Missing permission |
 | 404 | `not_found` | Resource absent **or** owned by another tenant |
 | 409 | `conflict` | Duplicate email/pending invite, replayed token, self-suspension |
+| 409 | `ambiguous_organization` | Login without `organization_slug` and the email exists in multiple organizations |
 | 500 | `db_error` / `internal_error` | Logged server-side, details not leaked |

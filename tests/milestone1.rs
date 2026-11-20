@@ -210,6 +210,82 @@ async fn login_logout_and_session_listing(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = "./migrations")]
+async fn login_resolves_tenant_without_organization_slug(pool: PgPool) {
+    let app = router(&pool);
+    let t = seed_tenant(&pool, "acme", "admin@acme.test", "admin").await;
+
+    // Credentials only: the organization comes from the user record.
+    let (status, cookie, body) = call(
+        &app,
+        "POST",
+        "/v1/api/auth/login",
+        None,
+        Some(json!({ "email": "admin@acme.test", "password": "Passw0rd!" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "login failed: {body}");
+    assert!(cookie.expect("session cookie").starts_with("eat_session="));
+    assert_eq!(body["data"]["user"]["organization_id"], json!(t.org_id));
+
+    // Email-first sign-in also works without a slug and stays generic.
+    let (status, _, body) = call(
+        &app,
+        "POST",
+        "/v1/api/auth/login-request",
+        None,
+        Some(json!({ "email": "admin@acme.test" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"], json!({}));
+
+    // An unknown email resolves to no tenant.
+    let (status, _, _) = call(
+        &app,
+        "POST",
+        "/v1/api/auth/login",
+        None,
+        Some(json!({ "email": "nobody@acme.test", "password": "Passw0rd!" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn login_with_a_shared_email_requires_a_slug(pool: PgPool) {
+    let app = router(&pool);
+    seed_tenant(&pool, "acme", "shared@acme.test", "admin").await;
+    seed_tenant(&pool, "globex", "shared@acme.test", "admin").await;
+
+    let (status, _, body) = call(
+        &app,
+        "POST",
+        "/v1/api/auth/login",
+        None,
+        Some(json!({ "email": "shared@acme.test", "password": "Passw0rd!" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["error_stack"][0]["code"], "ambiguous_organization");
+    assert_eq!(body["error_stack"][0]["field"], "organization_slug");
+
+    // Naming the tenant disambiguates.
+    let (status, _, _) = call(
+        &app,
+        "POST",
+        "/v1/api/auth/login",
+        None,
+        Some(json!({
+            "organization_slug": "globex",
+            "email": "shared@acme.test",
+            "password": "Passw0rd!"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[sqlx::test(migrations = "./migrations")]
 async fn invite_is_single_use_and_assigns_role(pool: PgPool) {
     let app = router(&pool);
     let admin = seed_tenant(&pool, "acme", "admin@acme.test", "admin").await;

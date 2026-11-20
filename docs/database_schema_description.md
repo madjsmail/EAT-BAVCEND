@@ -306,6 +306,13 @@ always returns the same generic message, creates a token for known users and log
 the link; `POST /auth/setup-account` locks the token, validates expiry, activates
 the user, consumes the token and issues a session cookie.
 
+Password login (`POST /auth/login`) resolves the tenant from the user record, so
+`organization_slug` is optional. When the same email exists in more than one
+organization the request fails with `409 ambiguous_organization` (field
+`organization_slug`) instead of guessing; emails are otherwise expected to be
+unique across the install even though the schema only enforces
+`UNIQUE (organization_id, email)`.
+
 ### `return_requests`
 
 Offboarding worklist for custody held by the departing user.
