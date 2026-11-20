@@ -23,7 +23,6 @@ services:
     image: dxflrs/garage:v2.5.0
     container_name: garage
     restart: unless-stopped
-    command: ["server"]
     environment:
       GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET}
     ports:
