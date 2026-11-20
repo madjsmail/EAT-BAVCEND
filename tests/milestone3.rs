@@ -240,8 +240,8 @@ async fn accessory_assignment_moves_stock(pool: PgPool) {
     .fetch_all(&pool)
     .await
     .unwrap();
-    assert!(actions.contains(&"accessory.assign".to_string()));
-    assert!(actions.contains(&"accessory.return".to_string()));
+    assert!(actions.contains(&"assigned".to_string()));
+    assert!(actions.contains(&"returned".to_string()));
 }
 
 #[sqlx::test(migrations = "./migrations")]

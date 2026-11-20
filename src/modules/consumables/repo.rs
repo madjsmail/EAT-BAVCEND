@@ -221,6 +221,15 @@ pub async fn create_consumable(
     req: &CreateConsumableRequest,
 ) -> Result<ConsumableRow> {
     let mut tx = pool.begin().await?;
+    audit::bind_actor(
+        &mut tx,
+        audit::Actor {
+            user_id: Some(actor),
+            ip_address: ip.as_deref(),
+            user_agent: None,
+        },
+    )
+    .await?;
     check_refs(
         &mut tx,
         org,
@@ -272,20 +281,6 @@ pub async fn create_consumable(
         .await?;
     }
 
-    audit::insert_tx(
-        &mut tx,
-        audit::Entry {
-            organization_id: Some(org),
-            actor_user_id: Some(actor),
-            action: "consumable.create",
-            entity_type: "consumable",
-            entity_id: Some(id),
-            metadata: serde_json::json!({ "quantity_on_hand": req.quantity_on_hand }),
-            ip_address: ip.as_deref(),
-        },
-    )
-    .await?;
-
     tx.commit().await?;
     get_consumable(pool, org, locale, id).await
 }
@@ -301,6 +296,15 @@ pub async fn update_consumable(
 ) -> Result<ConsumableRow> {
     let current = get_consumable(pool, org, locale, id).await?;
     let mut tx = pool.begin().await?;
+    audit::bind_actor(
+        &mut tx,
+        audit::Actor {
+            user_id: Some(actor),
+            ip_address: ip.as_deref(),
+            user_agent: None,
+        },
+    )
+    .await?;
 
     if let Some(Some(category_id)) = req.category_id {
         check_refs(&mut tx, org, Some(category_id), None, None, None).await?;
@@ -348,20 +352,6 @@ pub async fn update_consumable(
     .execute(&mut *tx)
     .await?;
 
-    audit::insert_tx(
-        &mut tx,
-        audit::Entry {
-            organization_id: Some(org),
-            actor_user_id: Some(actor),
-            action: "consumable.update",
-            entity_type: "consumable",
-            entity_id: Some(id),
-            metadata: serde_json::json!({}),
-            ip_address: ip.as_deref(),
-        },
-    )
-    .await?;
-
     tx.commit().await?;
     get_consumable(pool, org, locale, id).await
 }
@@ -374,6 +364,15 @@ pub async fn delete_consumable(
     id: Uuid,
 ) -> Result<()> {
     let mut tx = pool.begin().await?;
+    audit::bind_actor(
+        &mut tx,
+        audit::Actor {
+            user_id: Some(actor),
+            ip_address: ip.as_deref(),
+            user_agent: None,
+        },
+    )
+    .await?;
     let done = sqlx::query("DELETE FROM consumables WHERE id = $1 AND organization_id = $2")
         .bind(id)
         .bind(org)
@@ -382,19 +381,6 @@ pub async fn delete_consumable(
     if done.rows_affected() == 0 {
         return Err(ApiError::NotFound("Consumable"));
     }
-    audit::insert_tx(
-        &mut tx,
-        audit::Entry {
-            organization_id: Some(org),
-            actor_user_id: Some(actor),
-            action: "consumable.delete",
-            entity_type: "consumable",
-            entity_id: Some(id),
-            metadata: serde_json::json!({}),
-            ip_address: ip.as_deref(),
-        },
-    )
-    .await?;
     tx.commit().await?;
     Ok(())
 }
@@ -502,6 +488,15 @@ pub async fn create_transaction(
     };
 
     let mut tx = pool.begin().await?;
+    audit::bind_actor(
+        &mut tx,
+        audit::Actor {
+            user_id: Some(actor),
+            ip_address: ip.as_deref(),
+            user_agent: None,
+        },
+    )
+    .await?;
 
     let current: Option<i32> = sqlx::query_scalar(
         "SELECT quantity_on_hand FROM consumables
@@ -548,9 +543,9 @@ pub async fn create_transaction(
     .await?;
 
     let action = match req.transaction_type.as_str() {
-        "restock" => "consumable.restock",
-        "issue" => "consumable.issue",
-        _ => "consumable.adjustment",
+        "restock" => "restocked",
+        "issue" => "issued",
+        _ => "adjusted",
     };
 
     audit::insert_tx(

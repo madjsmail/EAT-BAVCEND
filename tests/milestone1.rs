@@ -200,7 +200,7 @@ async fn login_logout_and_session_listing(pool: PgPool) {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 
     let events: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM audit_logs WHERE organization_id = $1 AND action IN ('auth.login', 'auth.login_failed', 'auth.logout', 'session.revoked_all')",
+        "SELECT count(*) FROM audit_logs WHERE organization_id = $1 AND action IN ('login', 'login_failed', 'logout', 'sessions_revoked')",
     )
     .bind(t.org_id)
     .fetch_one(&pool)
@@ -328,7 +328,7 @@ async fn invite_is_single_use_and_assigns_role(pool: PgPool) {
     assert_eq!(status, StatusCode::FORBIDDEN);
 
     let audit_count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM audit_logs WHERE organization_id = $1 AND action = 'invitation.accepted'",
+        "SELECT count(*) FROM audit_logs WHERE organization_id = $1 AND action = 'accepted'",
     )
     .bind(admin.org_id)
     .fetch_one(&pool)
@@ -404,7 +404,7 @@ async fn tenant_isolation_blocks_and_audits_cross_tenant_access(pool: PgPool) {
     assert_eq!(status, StatusCode::OK);
 
     let denied: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM audit_logs WHERE organization_id = $1 AND action = 'tenant.cross_access_denied'",
+        "SELECT count(*) FROM audit_logs WHERE organization_id = $1 AND action = 'cross_access_denied'",
     )
     .bind(b.org_id)
     .fetch_one(&pool)

@@ -536,9 +536,11 @@ pub mod audit {
         sqlx::query(
             r#"
             INSERT INTO audit_logs (
-                organization_id, actor_user_id, action, entity_type, entity_id, metadata, ip_address
+                organization_id, actor_user_id, action, entity_type, entity_id, metadata,
+                ip_address, actor_user_agent
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            VALUES ($1, $2, $3, $4, $5, $6, $7,
+                    NULLIF(current_setting('app.user_agent', true), ''))
             "#,
         )
         .bind(entry.organization_id)
@@ -558,9 +560,11 @@ pub mod audit {
         sqlx::query(
             r#"
             INSERT INTO audit_logs (
-                organization_id, actor_user_id, action, entity_type, entity_id, metadata, ip_address
+                organization_id, actor_user_id, action, entity_type, entity_id, metadata,
+                ip_address, actor_user_agent
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            VALUES ($1, $2, $3, $4, $5, $6, $7,
+                    NULLIF(current_setting('app.user_agent', true), ''))
             "#,
         )
         .bind(entry.organization_id)
@@ -590,5 +594,32 @@ pub mod audit {
         .bind(organization_id)
         .fetch_one(pool)
         .await
+    }
+
+    /// Who is making the request. Triggers read this from transaction-local
+    /// settings, so every row change in the transaction is attributed.
+    #[derive(Clone, Copy, Default)]
+    pub struct Actor<'a> {
+        pub user_id: Option<Uuid>,
+        pub ip_address: Option<&'a str>,
+        pub user_agent: Option<&'a str>,
+    }
+
+    /// Must be called inside a transaction: `set_config(..., true)` is
+    /// transaction-local and never leaks into the pooled connection.
+    pub async fn bind_actor(conn: &mut PgConnection, actor: Actor<'_>) -> sqlx::Result<()> {
+        sqlx::query(
+            r#"
+            SELECT set_config('app.actor_user_id', $1, true),
+                   set_config('app.request_ip', $2, true),
+                   set_config('app.user_agent', $3, true)
+            "#,
+        )
+        .bind(actor.user_id.map(|id| id.to_string()).unwrap_or_default())
+        .bind(actor.ip_address.unwrap_or_default())
+        .bind(actor.user_agent.unwrap_or_default())
+        .execute(conn)
+        .await?;
+        Ok(())
     }
 }

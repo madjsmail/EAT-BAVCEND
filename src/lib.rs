@@ -12,3 +12,4 @@ pub mod routes;
 pub mod seed;
 pub mod service;
 pub mod state;
+pub mod storage;

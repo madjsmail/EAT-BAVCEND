@@ -192,6 +192,15 @@ pub async fn create_license(
     req: &CreateLicenseRequest,
 ) -> Result<LicenseRow> {
     let mut tx = pool.begin().await?;
+    audit::bind_actor(
+        &mut tx,
+        audit::Actor {
+            user_id: Some(actor),
+            ip_address: ip.as_deref(),
+            user_agent: None,
+        },
+    )
+    .await?;
     if let Some(id) = req.manufacturer_id {
         ensure_org_ref(&mut tx, "manufacturers", org, id, "manufacturer_id").await?;
     }
@@ -226,19 +235,6 @@ pub async fn create_license(
 
     replace_translations(&mut tx, id, &req.translations).await?;
 
-    audit::insert_tx(
-        &mut tx,
-        audit::Entry {
-            organization_id: Some(org),
-            actor_user_id: Some(actor),
-            action: "license.create",
-            entity_type: "license",
-            entity_id: Some(id),
-            metadata: serde_json::json!({ "total_seats": req.total_seats }),
-            ip_address: ip.as_deref(),
-        },
-    )
-    .await?;
 
     tx.commit().await?;
     get_license(pool, org, locale, id).await
@@ -255,6 +251,15 @@ pub async fn update_license(
 ) -> Result<LicenseRow> {
     let current = get_license(pool, org, locale, id).await?;
     let mut tx = pool.begin().await?;
+    audit::bind_actor(
+        &mut tx,
+        audit::Actor {
+            user_id: Some(actor),
+            ip_address: ip.as_deref(),
+            user_agent: None,
+        },
+    )
+    .await?;
 
     if let Some(Some(manufacturer_id)) = req.manufacturer_id {
         ensure_org_ref(
@@ -316,19 +321,6 @@ pub async fn update_license(
     .execute(&mut *tx)
     .await?;
 
-    audit::insert_tx(
-        &mut tx,
-        audit::Entry {
-            organization_id: Some(org),
-            actor_user_id: Some(actor),
-            action: "license.update",
-            entity_type: "license",
-            entity_id: Some(id),
-            metadata: serde_json::json!({ "total_seats": total_seats }),
-            ip_address: ip.as_deref(),
-        },
-    )
-    .await?;
 
     tx.commit().await?;
     get_license(pool, org, locale, id).await
@@ -342,6 +334,15 @@ pub async fn delete_license(
     id: Uuid,
 ) -> Result<()> {
     let mut tx = pool.begin().await?;
+    audit::bind_actor(
+        &mut tx,
+        audit::Actor {
+            user_id: Some(actor),
+            ip_address: ip.as_deref(),
+            user_agent: None,
+        },
+    )
+    .await?;
     let done = sqlx::query("DELETE FROM licenses WHERE id = $1 AND organization_id = $2")
         .bind(id)
         .bind(org)
@@ -350,19 +351,6 @@ pub async fn delete_license(
     if done.rows_affected() == 0 {
         return Err(ApiError::NotFound("License"));
     }
-    audit::insert_tx(
-        &mut tx,
-        audit::Entry {
-            organization_id: Some(org),
-            actor_user_id: Some(actor),
-            action: "license.delete",
-            entity_type: "license",
-            entity_id: Some(id),
-            metadata: serde_json::json!({}),
-            ip_address: ip.as_deref(),
-        },
-    )
-    .await?;
     tx.commit().await?;
     Ok(())
 }
@@ -507,6 +495,15 @@ pub async fn allocate_seat(
     }
 
     let mut tx = pool.begin().await?;
+    audit::bind_actor(
+        &mut tx,
+        audit::Actor {
+            user_id: Some(actor),
+            ip_address: ip.as_deref(),
+            user_agent: None,
+        },
+    )
+    .await?;
 
     // Lock the license first; every allocator serialises behind it.
     let total_seats: Option<i32> = sqlx::query_scalar(
@@ -558,7 +555,7 @@ pub async fn allocate_seat(
         audit::Entry {
             organization_id: Some(org),
             actor_user_id: Some(actor),
-            action: "license.assign",
+            action: "assigned",
             entity_type: "license",
             entity_id: Some(license_id),
             metadata: serde_json::json!({
@@ -586,6 +583,15 @@ pub async fn revoke_seat(
     req: &RevokeSeatRequest,
 ) -> Result<SeatRow> {
     let mut tx = pool.begin().await?;
+    audit::bind_actor(
+        &mut tx,
+        audit::Actor {
+            user_id: Some(actor),
+            ip_address: ip.as_deref(),
+            user_agent: None,
+        },
+    )
+    .await?;
 
     let done = sqlx::query(
         "UPDATE license_seats
@@ -608,7 +614,7 @@ pub async fn revoke_seat(
         audit::Entry {
             organization_id: Some(org),
             actor_user_id: Some(actor),
-            action: "license.revoke",
+            action: "revoked",
             entity_type: "license",
             entity_id: Some(license_id),
             metadata: serde_json::json!({ "seat_id": seat_id }),

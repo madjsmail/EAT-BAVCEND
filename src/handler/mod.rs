@@ -89,7 +89,7 @@ pub async fn login(
             audit::Entry {
                 organization_id: Some(org.id),
                 actor_user_id: None,
-                action: "auth.login_failed",
+                action: "login_failed",
                 entity_type: "user",
                 entity_id: None,
                 metadata: json!({ "email": email, "reason": "unknown_user" }),
@@ -116,7 +116,7 @@ pub async fn login(
             audit::Entry {
                 organization_id: Some(org.id),
                 actor_user_id: Some(user.id),
-                action: "auth.login_failed",
+                action: "login_failed",
                 entity_type: "user",
                 entity_id: Some(user.id),
                 metadata: json!({ "email": email, "reason": "bad_credentials" }),
@@ -150,7 +150,7 @@ pub async fn login(
         audit::Entry {
             organization_id: Some(org.id),
             actor_user_id: Some(user.id),
-            action: "auth.login",
+            action: "login",
             entity_type: "session",
             entity_id: Some(session_row.id),
             metadata: json!({}),
@@ -187,7 +187,7 @@ pub async fn logout(
         audit::Entry {
             organization_id: Some(ctx.organization_id()),
             actor_user_id: Some(ctx.user.id),
-            action: "auth.logout",
+            action: "logout",
             entity_type: "session",
             entity_id: Some(ctx.session.id),
             metadata: json!({}),
@@ -272,7 +272,7 @@ pub async fn create_invitation(
         audit::Entry {
             organization_id: Some(ctx.organization_id()),
             actor_user_id: Some(ctx.user.id),
-            action: "invitation.created",
+            action: "invited",
             entity_type: "invitation",
             entity_id: Some(created.id),
             metadata: json!({ "email": email, "role": role.code }),
@@ -326,7 +326,7 @@ pub async fn revoke_invitation(
         audit::Entry {
             organization_id: Some(ctx.organization_id()),
             actor_user_id: Some(ctx.user.id),
-            action: "invitation.revoked",
+            action: "invitation_revoked",
             entity_type: "invitation",
             entity_id: Some(revoked.id),
             metadata: json!({ "email": revoked.email }),
@@ -484,7 +484,7 @@ pub async fn accept_invitation(
         audit::Entry {
             organization_id: Some(inv.organization_id),
             actor_user_id: Some(profile_user.id),
-            action: "invitation.accepted",
+            action: "accepted",
             entity_type: "invitation",
             entity_id: Some(inv.id),
             metadata: json!({ "email": inv.email }),
@@ -545,7 +545,7 @@ pub async fn revoke_session(
                 audit::Entry {
                     organization_id: Some(audience),
                     actor_user_id: Some(ctx.user.id),
-                    action: "tenant.cross_access_denied",
+                    action: "cross_access_denied",
                     entity_type: "session",
                     entity_id: Some(id),
                     metadata: json!({ "target_organization_id": owner_org }),
@@ -562,7 +562,7 @@ pub async fn revoke_session(
         audit::Entry {
             organization_id: Some(audience),
             actor_user_id: Some(ctx.user.id),
-            action: "session.revoked",
+            action: "session_revoked",
             entity_type: "session",
             entity_id: Some(id),
             metadata: json!({}),
@@ -596,7 +596,7 @@ pub async fn revoke_all_sessions(
         audit::Entry {
             organization_id: Some(ctx.organization_id()),
             actor_user_id: Some(ctx.user.id),
-            action: "session.revoked_all",
+            action: "sessions_revoked",
             entity_type: "user",
             entity_id: Some(ctx.user.id),
             metadata: json!({ "revoked": revoked }),
@@ -651,7 +651,7 @@ pub async fn update_user_status(
         audit::Entry {
             organization_id: Some(ctx.organization_id()),
             actor_user_id: Some(ctx.user.id),
-            action: "user.status_changed",
+            action: "status_changed",
             entity_type: "user",
             entity_id: Some(updated.id),
             metadata: json!({ "status": payload.status }),

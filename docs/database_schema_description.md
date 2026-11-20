@@ -183,3 +183,92 @@ Migration: `20260101000004_accessories_consumables_licenses.sql`.
 `accessories.read/write/assign`, `consumables.read/write/issue`,
 `licenses.read/write/assign`.
 Admin: all. Manager: all. Technician: read + assign/issue. Viewer: read.
+
+## Maintenance, attachments & audit explorer (Milestone 4)
+
+Migrations: `0004_accessories_consumables_licenses.sql`,
+`0005_audit_logs_explorer.sql`, `0006_maintenances_attachments.sql`.
+
+### `asset_maintenances`
+
+| Column | Rules |
+| --- | --- |
+| `asset_id` | FK → `assets` `ON DELETE CASCADE`; `(organization_id, asset_id)` filtered by status. |
+| `title` | `CHECK (btrim(title) <> '')`. |
+| `maintenance_type` | `preventive`, `corrective` (default), `inspection`. |
+| `status` | `open` (default), `in_progress`, `completed`, `cancelled`. |
+| `priority` | `low`, `medium` (default), `high`, `critical`. |
+| `supplier_id` / `assigned_to_user_id` / `created_by_user_id` | nullable FKs, `ON DELETE SET NULL`. |
+| `rma_reference` | free text RMA / case number. |
+| `previous_status_id` | FK → `statuses`; status of the asset before the ticket opened. |
+| `reported_at` / `scheduled_at` / `started_at` / `completed_at` | `TIMESTAMPTZ`. |
+| `completion_notes` | free text, required on completion. |
+| `cost` / `currency` | `NUMERIC(14,2) >= 0`, ISO-4217 currency (default `USD`). |
+
+Business rules:
+
+- Opening a ticket runs in a transaction, locks the asset
+  (`SELECT ... FOR UPDATE`), rejects a second open ticket with `409`, stores
+  `previous_status_id`, and moves the asset to `being_repaired` (fallback:
+  the first `status_type = 'pending'` status).
+- Completing or cancelling restores `previous_status_id` (or an explicitly
+  supplied `restore_status_id`; fallback `ready_to_deploy`, else the first
+  `deployable` status).
+- `completed` / `cancelled` tickets are immutable (`PATCH` returns `409`);
+  only `open` / `cancelled` tickets may be deleted.
+- Indexes: `(organization_id, created_at DESC)`, `(organization_id, asset_id,
+  created_at DESC)`, `(organization_id, status, created_at DESC)`, partial
+  `assigned_to_user_id`; partial unique
+  `asset_maintenances_one_open_per_asset (organization_id, asset_id) WHERE
+  status IN ('open','in_progress')`.
+
+### `attachments`
+
+| Column | Rules |
+| --- | --- |
+| `attachable_type` | `asset`, `product`, `maintenance`, `license`, `accessory`, `consumable`. |
+| `attachable_id` | `UUID NOT NULL`; target must exist in the same organization. |
+| `category` | `invoice`, `warranty`, `damage_photo`, `handover_receipt`, `other` (default). |
+| `file_name` | `CHECK (btrim(file_name) <> '')`. |
+| `mime_type` | Sniffed from the multipart part; API allowlists image/pdf/text/zip/office types. |
+| `size_bytes` | `BIGINT >= 0`; API cap 20 MB per file. |
+| `storage_key` | `UNIQUE`; Garage object key `{organization_id}/{entity_type}/{entity_id}/{uuid}-{sanitized_filename}`. |
+| `uploaded_by_user_id` | FK → `users`, `ON DELETE SET NULL`. |
+
+Indexes: `(organization_id, attachable_type, attachable_id, created_at DESC)`
+and a partial index on `uploaded_by_user_id`.
+
+### `audit_logs` (extended)
+
+New columns: `actor_user_agent TEXT`, `old_values JSONB`, `new_values JSONB`,
+`diff JSONB`. Existing names are unchanged (`action`, `entity_type`,
+`entity_id`, `metadata`, `ip_address`).
+
+- **Capture:** the `audit_row_change()` trigger fires `AFTER INSERT OR UPDATE
+  OR DELETE` on `assets`, `products`, `departments`, `categories`,
+  `manufacturers`, `statuses`, `locations`, `suppliers`,
+  `depreciation_models`, `accessories`, `consumables`, `licenses`, `users`,
+  `asset_maintenances`, `attachments`.
+  - `INSERT` → `action = 'created'`, `new_values` = full row.
+  - `UPDATE` → `action = 'updated'`, `diff = {"<column>": {"old": …, "new": …}}`
+    only for columns that actually changed (ignores `created_at`,
+    `updated_at`, `last_login_at`; no row when nothing changed).
+  - `DELETE` → `action = 'deleted'`, `old_values` = full row.
+  - `entity_type` is the singular slug (`asset`, `product`, `maintenance`, …).
+  - Actor attribution comes from transaction-local settings written by
+    `repository::audit::bind_actor()`: `app.actor_user_id`, `app.request_ip`,
+    `app.user_agent`.
+- **Custom events** (`login`, `assigned`, `issued`, `maintenance_opened`,
+  `maintenance_closed`, …) are inserted explicitly by handlers/repos and are
+  not duplicated by the trigger.
+- **Indexes:** `(organization_id, created_at DESC)`,
+  `(organization_id, actor_user_id, created_at DESC)`,
+  `(organization_id, entity_type, entity_id, created_at DESC)`,
+  `(organization_id, action, created_at DESC)`, plus trigram GIN indexes on
+  `diff::text`, `old_values::text`, `new_values::text` for free-text search
+  (`pg_trgm` extension).
+
+### Permissions added
+
+`maintenances.read`, `maintenances.write`, `attachments.read`,
+`attachments.write`, `audit.read`, `dashboard.read`.

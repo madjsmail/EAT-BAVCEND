@@ -102,7 +102,7 @@ pub async fn bootstrap(db: &Database, args: Vec<String>) -> Result<(), String> {
         audit::Entry {
             organization_id: Some(org.id),
             actor_user_id: Some(admin.id),
-            action: "organization.bootstrapped",
+            action: "bootstrapped",
             entity_type: "organization",
             entity_id: Some(org.id),
             metadata: json!({ "slug": org_slug, "admin_email": email }),
