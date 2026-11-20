@@ -1,9 +1,9 @@
 // Envelope helpers are the project-wide response API; not every variant is used yet.
 #![allow(dead_code)]
 
+use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde::Serialize;
 
 /// Standard envelope returned by every endpoint.
@@ -159,7 +159,11 @@ mod tests {
         let value = serde_json::to_value(ApiResponse::<()>::error(
             400,
             "Validation failed",
-            vec![ErrorDetail::with_field("email", "invalid", "Email is not valid")],
+            vec![ErrorDetail::with_field(
+                "email",
+                "invalid",
+                "Email is not valid",
+            )],
         ))
         .unwrap();
         assert_eq!(value["error"], true);
