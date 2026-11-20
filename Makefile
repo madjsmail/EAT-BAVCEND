@@ -4,6 +4,10 @@ CARGO ?= cargo
 DATABASE_URL ?= $(shell sed -n 's/^DATABASE_URL=//p' .env 2>/dev/null)
 export DATABASE_URL
 
+# Port the API binds to (from .env, default 8000).
+APP_PORT ?= $(shell sed -n 's/^APP_PORT=//p' .env 2>/dev/null)
+APP_PORT := $(if $(APP_PORT),$(APP_PORT),8000)
+
 .DEFAULT_GOAL := help
 .PHONY: help run watch bootstrap migrate test test-unit test-integration check fmt clippy clean clean-db garage-up garage-down
 
@@ -14,6 +18,7 @@ run: ## Start the API server
 	$(CARGO) run
 
 watch: ## Restart the API on file changes (requires cargo-watch)
+	-@fuser -k $(APP_PORT)/tcp >/dev/null 2>&1
 	$(CARGO) watch -x run
 
 bootstrap: ## Create the first organization + admin (ORG, SLUG, EMAIL, PASSWORD, FIRST, LAST)
