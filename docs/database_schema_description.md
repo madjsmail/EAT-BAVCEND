@@ -333,6 +333,22 @@ accessory assignment (remaining quantity) and live license seat, reassigns direc
 reports (a `new_manager_id` is required when reports exist), revokes sessions and
 writes an audit row — all in one transaction.
 
+### Directory
+
+`GET /users` (requires `users.read`) powers the custody, license-seat and
+consumable pickers. Filters:
+
+| Param | Notes |
+| --- | --- |
+| `search` (alias `q`) | ILIKE over first/last name, email, `employee_id` and full name. |
+| `status` | `invited`, `active`, `suspended`, `offboarded`. |
+| `department_id`, `location_id`, `manager_id`, `role_id` | Exact UUIDs; `role_id` matches `user_roles`. |
+| `page` / `per_page` | Default 25, clamped to 1..100. |
+
+Ordered by `last_name, first_name, id`; soft-deleted users are excluded and the
+tenant always comes from the session. `GET /users/{id}` returns a single
+`UserResponse`.
+
 ### Import
 
 `POST /users/import` accepts CSV or XLSX (`multipart/form-data`, field `file`;

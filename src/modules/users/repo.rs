@@ -59,6 +59,7 @@ pub async fn list_users(
     location_id: Option<Uuid>,
     status: Option<&str>,
     manager_id: Option<Uuid>,
+    role_id: Option<Uuid>,
     limit: i64,
     offset: i64,
 ) -> Result<(Vec<UserRow>, i64)> {
@@ -74,10 +75,15 @@ pub async fn list_users(
           AND ($5::uuid IS NULL OR u.location_id = $5)
           AND ($6::text IS NULL OR u.status = $6)
           AND ($7::uuid IS NULL OR u.manager_id = $7)
+          AND ($8::uuid IS NULL OR EXISTS (
+                SELECT 1 FROM user_roles ur
+                 WHERE ur.user_id = u.id
+                   AND ur.organization_id = u.organization_id
+                   AND ur.role_id = $8))
     "#;
 
     let sql = format!(
-        "{USER_SELECT} {filter} ORDER BY u.last_name, u.first_name, u.id LIMIT $8 OFFSET $9"
+        "{USER_SELECT} {filter} ORDER BY u.last_name, u.first_name, u.id LIMIT $9 OFFSET $10"
     );
     let rows = sqlx::query_as::<_, UserRow>(&sql)
         .bind(org)
@@ -87,6 +93,7 @@ pub async fn list_users(
         .bind(location_id)
         .bind(status)
         .bind(manager_id)
+        .bind(role_id)
         .bind(limit)
         .bind(offset)
         .fetch_all(pool)
@@ -101,6 +108,7 @@ pub async fn list_users(
         .bind(location_id)
         .bind(status)
         .bind(manager_id)
+        .bind(role_id)
         .fetch_one(pool)
         .await?;
 

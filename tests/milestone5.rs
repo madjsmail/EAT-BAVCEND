@@ -499,3 +499,70 @@ async fn offboarding_flags_returns_and_reassigns_reports(pool: PgPool) {
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn user_list_supports_picker_filters(pool: PgPool) {
+    let app = router(&pool);
+    let t = seed_tenant(&pool, "acme").await;
+
+    let grace = insert_user(&pool, t.org_id, "Grace", "Hopper", "grace@acme.test", "active").await;
+    let _alan = insert_user(&pool, t.org_id, "Alan", "Turing", "alan@acme.test", "invited").await;
+    let viewer_id: Uuid = sqlx::query_scalar("SELECT id FROM roles WHERE code = 'viewer'")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO user_roles (organization_id, user_id, role_id) VALUES ($1, $2, $3)",
+    )
+    .bind(t.org_id)
+    .bind(grace)
+    .bind(viewer_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Another tenant's user must never leak into the picker.
+    let other_org: Uuid =
+        sqlx::query_scalar("INSERT INTO organizations (name, slug) VALUES ('Other', 'other') RETURNING id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    insert_user(&pool, other_org, "Grace", "Other", "grace@other.test", "active").await;
+
+    // `q` is accepted as an alias of `search`.
+    let (status, _, body) = call(&app, "GET", "/v1/api/users?q=grace", Some(&t.token), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["pagination"]["total"], 1);
+    assert_eq!(body["data"][0]["id"], grace.to_string());
+
+    // Role filter uses user_roles, scoped to the organization.
+    let (status, _, body) = call(
+        &app,
+        "GET",
+        &format!("/v1/api/users?role_id={viewer_id}"),
+        Some(&t.token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["pagination"]["total"], 1);
+    assert_eq!(body["data"][0]["email"], "grace@acme.test");
+
+    // Status filter and pagination for a picker.
+    let (status, _, body) = call(
+        &app,
+        "GET",
+        "/v1/api/users?status=active&per_page=1",
+        Some(&t.token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["pagination"]["total"], 2);
+    assert_eq!(body["pagination"]["per_page"], 1);
+    assert_eq!(body["pagination"]["total_pages"], 2);
+
+    let (status, _, body) = call(&app, "GET", "/v1/api/users?q=nobody", Some(&t.token), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["pagination"]["total"], 0);
+}

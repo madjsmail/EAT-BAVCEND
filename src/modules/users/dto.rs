@@ -8,11 +8,14 @@ use crate::modules::common::double_option;
 
 #[derive(Debug, Default, Deserialize)]
 pub struct ListUsersQuery {
+    /// Free text over name, email and employee id. `q` is the picker alias.
+    #[serde(alias = "q")]
     pub search: Option<String>,
     pub department_id: Option<Uuid>,
     pub location_id: Option<Uuid>,
     pub status: Option<String>,
     pub manager_id: Option<Uuid>,
+    pub role_id: Option<Uuid>,
     pub page: Option<u32>,
     pub per_page: Option<u32>,
 }

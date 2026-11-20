@@ -114,6 +114,7 @@ pub async fn list_users(
         query.location_id,
         query.status.as_deref(),
         query.manager_id,
+        query.role_id,
         per_page as i64,
         ((page - 1) * per_page) as i64,
     )
