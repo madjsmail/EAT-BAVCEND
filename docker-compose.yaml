@@ -1,0 +1,67 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-appuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me_postgres_pass}
+      POSTGRES_DB: ${POSTGRES_DB:-appdb}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-appuser} -d $${POSTGRES_DB:-appdb}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - app_net
+
+  garage:
+    image: dxflrs/garage:v2.5.0
+    container_name: garage
+    restart: unless-stopped
+    command: ["server"]
+    environment:
+      GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET}
+    ports:
+      - "3900:3900" # S3 API
+      - "3901:3901" # RPC
+      - "3902:3902" # S3 Web hosting
+      - "3903:3903" # Admin API
+    volumes:
+      - ./garage.toml:/etc/garage.toml:ro
+      - garage_meta:/var/lib/garage/meta
+      - garage_data:/var/lib/garage/data
+    networks:
+      - app_net
+
+  libredb-studio:
+    image: libredb/libredb-studio:latest
+    container_name: libredb-studio
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ADMIN_EMAIL: ${LIBREDB_ADMIN_EMAIL:-admin@local.dev}
+      ADMIN_PASSWORD: ${LIBREDB_ADMIN_PASSWORD:-ChangeMeStrongPassword123!}
+      JWT_SECRET: ${LIBREDB_JWT_SECRET:-replace_with_at_least_32_char_secret_key_here}
+    ports:
+      - "3000:3000"
+    volumes:
+      - libredb_data:/app/data
+    networks:
+      - app_net
+
+volumes:
+  postgres_data:
+  garage_meta:
+  garage_data:
+  libredb_data:
+
+networks:
+  app_net:
+    driver: bridge

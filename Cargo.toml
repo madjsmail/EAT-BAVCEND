@@ -1,0 +1,23 @@
+[package]
+name = "rust-api"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+async-trait = "0.1.89"
+axum = "0.8.8"
+chrono = { version = "0.4.43", features = ["serde"] }
+dotenv = "0.15.0"
+serde = { version = "1.0.228", features = ["derive"] }
+sqlx = { version = "0.8.6", features = ["runtime-tokio-rustls", "migrate", "chrono", "time", "postgres", "uuid"] }
+thiserror = "2.0.18"
+tokio = { version = "1.49.0", features = ["full"] }
+tower = { version = "0.5.3", features = ["full"] }
+tower-http = { version = "0.6.8", features = ["full"] }
+uuid = { version = "1.19.0", features = ["v4", "serde"] }
+time = "0.3.45"
+log = "0.4.29"
+log4rs = "1.4.0"
+
+[dev-dependencies]
+serde_json = "1.0"
