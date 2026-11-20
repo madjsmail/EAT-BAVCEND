@@ -1,9 +1,10 @@
 use crate::config::database::{Database, DatabaseTrait};
+use crate::handler;
 use crate::response::api_response::{ApiResponse, ErrorDetail};
+use axum::Router;
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::routing::{get, IntoMakeService};
-use axum::Router;
+use axum::routing::{delete, get, patch, post};
 use log::error;
 use std::sync::Arc;
 use tower_http::trace::TraceLayer;
@@ -22,12 +23,35 @@ async fn health(State(db): State<Arc<Database>>) -> ApiResponse<String> {
     }
 }
 
-pub fn routes(db_conn: Arc<Database>) -> IntoMakeService<Router> {
-    let api = Router::<Arc<Database>>::new().route("/health", get(health));
+/// Router factory shared by the server and the integration tests.
+pub fn app(db_conn: Arc<Database>) -> Router {
+    let api = Router::<Arc<Database>>::new()
+        .route("/health", get(health))
+        // Public (invite-only) auth surface.
+        .route("/auth/login", post(handler::login))
+        .route("/invite/{token}", get(handler::preview_invitation))
+        .route("/invitations/accept", post(handler::accept_invitation))
+        // Authenticated surface.
+        .route("/auth/logout", post(handler::logout))
+        .route("/auth/me", get(handler::me))
+        .route(
+            "/invitations",
+            post(handler::create_invitation).get(handler::list_invitations),
+        )
+        .route("/invitations/{id}", delete(handler::revoke_invitation))
+        .route(
+            "/sessions",
+            get(handler::list_sessions).delete(handler::revoke_all_sessions),
+        )
+        .route("/sessions/{id}", delete(handler::revoke_session))
+        .route("/users/{id}/status", patch(handler::update_user_status));
 
     Router::<Arc<Database>>::new()
         .nest("/v1/api", api)
         .with_state(db_conn)
         .layer(TraceLayer::new_for_http())
-        .into_make_service()
+}
+
+pub fn routes(db_conn: Arc<Database>) -> axum::routing::IntoMakeService<Router> {
+    app(db_conn).into_make_service()
 }

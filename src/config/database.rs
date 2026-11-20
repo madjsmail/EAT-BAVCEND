@@ -1,8 +1,10 @@
 use std::process::exit;
-use crate::parameter;
+
 use async_trait::async_trait;
 use log::error;
 use sqlx::{Error, PgPool, Pool, Postgres};
+
+use crate::config::parameter;
 
 pub struct Database {
     pool: PgPool,
@@ -30,5 +32,12 @@ impl DatabaseTrait for Database {
 
     fn get_pool(&self) -> &PgPool {
         &self.pool
+    }
+}
+
+impl Database {
+    /// Used by tests, which own an isolated pool.
+    pub fn from_pool(pool: PgPool) -> Self {
+        Self { pool }
     }
 }
