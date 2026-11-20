@@ -301,6 +301,15 @@ pub async fn list_invitations(
     Ok(ApiResponse::success(json!(rows)))
 }
 
+pub async fn list_roles(
+    State(db): State<Arc<Database>>,
+    ctx: AuthContext,
+) -> Result<ApiResponse<serde_json::Value>, ApiError> {
+    rbac::require(&ctx, "roles.read")?;
+    let rows = role::list_for_org(db.get_pool(), ctx.organization_id()).await?;
+    Ok(ApiResponse::success(json!(rows)))
+}
+
 pub async fn revoke_invitation(
     State(db): State<Arc<Database>>,
     ctx: AuthContext,
@@ -358,6 +367,7 @@ pub async fn preview_invitation(
 
     Ok(ApiResponse::success(InvitePreview {
         organization_name: org.name,
+        organization_slug: org.slug,
         email: inv.email,
         role_name: role.name,
         expires_at: inv.expires_at,

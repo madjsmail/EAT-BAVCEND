@@ -76,6 +76,7 @@ pub struct InvitationResponse {
 #[derive(Debug, Serialize)]
 pub struct InvitePreview {
     pub organization_name: String,
+    pub organization_slug: String,
     pub email: String,
     pub role_name: String,
     pub expires_at: DateTime<Utc>,

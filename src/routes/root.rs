@@ -39,6 +39,7 @@ pub fn app(db_conn: Arc<Database>) -> Router {
             post(handler::create_invitation).get(handler::list_invitations),
         )
         .route("/invitations/{id}", delete(handler::revoke_invitation))
+        .route("/roles", get(handler::list_roles))
         .route(
             "/sessions",
             get(handler::list_sessions).delete(handler::revoke_all_sessions),
