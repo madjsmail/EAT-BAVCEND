@@ -328,12 +328,13 @@ writes an audit row — all in one transaction.
 
 ### Import
 
-`POST /users/import` accepts CSV (`multipart/form-data`, field `file`):
+`POST /users/import` accepts CSV or XLSX (`multipart/form-data`, field `file`;
+first worksheet only for workbooks):
 required `first_name,last_name,email`; optional `employee_id,job_title,
 department,location,manager_email,preferred_locale,phone_number`. Unknown
 departments are created (code derived from the name, capped at 8 chars). Each row
 is its own transaction; imported users are `invited` with no password and get the
-system `employee` role. XLSX is rejected with a 400.
+system `employee` role. Legacy `.xls` files are rejected with a 400.
 
 ### Permissions added
 

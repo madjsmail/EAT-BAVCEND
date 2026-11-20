@@ -118,11 +118,20 @@ async fn call(
     (status, cookie, json)
 }
 
-async fn upload_csv(app: &Router, token: &str, csv: &str) -> (StatusCode, Value) {
+async fn upload(
+    app: &Router,
+    token: &str,
+    filename: &str,
+    content_type: &str,
+    body: &[u8],
+) -> (StatusCode, Value) {
     const BOUNDARY: &str = "X-BOUNDARY-123";
-    let body = format!(
-        "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"users.csv\"\r\nContent-Type: text/csv\r\n\r\n{csv}\r\n--{BOUNDARY}--\r\n"
-    );
+    let mut payload = format!(
+        "--{BOUNDARY}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\nContent-Type: {content_type}\r\n\r\n"
+    )
+    .into_bytes();
+    payload.extend_from_slice(body);
+    payload.extend_from_slice(format!("\r\n--{BOUNDARY}--\r\n").as_bytes());
     let request = Request::builder()
         .method("POST")
         .uri("/v1/api/users/import")
@@ -131,12 +140,16 @@ async fn upload_csv(app: &Router, token: &str, csv: &str) -> (StatusCode, Value)
             "content-type",
             format!("multipart/form-data; boundary={BOUNDARY}"),
         )
-        .body(Body::from(body))
+        .body(Body::from(payload))
         .unwrap();
     let response = app.clone().oneshot(request).await.unwrap();
     let status = response.status();
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+}
+
+async fn upload_csv(app: &Router, token: &str, csv: &str) -> (StatusCode, Value) {
+    upload(app, token, "users.csv", "text/csv", csv.as_bytes()).await
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -287,6 +300,44 @@ async fn csv_import_creates_users_and_reports_bad_rows(pool: PgPool) {
     .await
     .unwrap();
     assert_eq!(role_count, 2);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+async fn xlsx_import_matches_csv_behaviour(pool: PgPool) {
+    let app = router(&pool);
+    let t = seed_tenant(&pool, "acme").await;
+
+    let bytes = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/users.xlsx"
+    ))
+    .unwrap();
+    let (status, body) = upload(
+        &app,
+        &t.token,
+        "users.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        &bytes,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "xlsx import failed: {body}");
+    assert_eq!(body["data"]["total_rows"], 3);
+    assert_eq!(body["data"]["imported"], 2);
+    assert_eq!(body["data"]["failed"], 1);
+
+    // The spreadsheet row number (header = 1) is reported, not a flat index.
+    let errors = body["data"]["errors"].as_array().unwrap();
+    assert_eq!(errors[0]["row"], 4);
+    assert_eq!(errors[0]["error"], "email is required");
+
+    let locales: Vec<String> = sqlx::query_scalar(
+        "SELECT preferred_locale FROM users WHERE organization_id = $1 AND status = 'invited' ORDER BY email",
+    )
+    .bind(t.org_id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(locales, vec!["ar".to_string(), "fr".to_string()]);
 }
 
 #[sqlx::test(migrations = "./migrations")]

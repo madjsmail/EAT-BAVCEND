@@ -524,7 +524,7 @@ pub async fn offboard_user(
 
 // ---------------------------------------------------------------- import --
 
-/// CSV columns (header names are case-insensitive):
+/// CSV/XLSX columns (header names are case-insensitive):
 /// first_name, last_name, email, employee_id, job_title, department,
 /// location, manager_email, preferred_locale, phone_number.
 pub async fn import_users(
@@ -537,6 +537,7 @@ pub async fn import_users(
     let pool = db.get_pool();
 
     let mut bytes: Option<Vec<u8>> = None;
+    let mut file_name = String::new();
     while let Some(field) = multipart
         .next_field()
         .await
@@ -545,14 +546,7 @@ pub async fn import_users(
         if field.name() != Some("file") {
             continue;
         }
-        let file_name = field.file_name().unwrap_or_default().to_lowercase();
-        if file_name.ends_with(".xlsx") || file_name.ends_with(".xls") {
-            return Err(ApiError::bad_request(
-                "file",
-                "unsupported_format",
-                "Excel files are not supported yet; upload a CSV file",
-            ));
-        }
+        file_name = field.file_name().unwrap_or_default().to_lowercase();
         let body = field
             .bytes()
             .await
@@ -561,35 +555,42 @@ pub async fn import_users(
             return Err(ApiError::bad_request(
                 "file",
                 "too_large",
-                "CSV file must be 10 MB or smaller",
+                "File must be 10 MB or smaller",
             ));
         }
         bytes = Some(body.to_vec());
     }
 
     let bytes = bytes.ok_or_else(|| {
-        ApiError::bad_request("file", "required", "Attach a CSV file in the 'file' field")
+        ApiError::bad_request("file", "required", "Attach a CSV or XLSX file in the 'file' field")
     })?;
-
-    let mut reader = csv::ReaderBuilder::new()
-        .trim(csv::Trim::All)
-        .flexible(true)
-        .from_reader(bytes.as_slice());
-
-    let headers: Vec<String> = reader
-        .headers()
-        .map_err(|e| ApiError::bad_request("file", "invalid", format!("Invalid CSV header: {e}")))?
-        .iter()
-        .map(|h| h.trim().to_lowercase())
-        .collect();
+    if file_name.ends_with(".xls") && !file_name.ends_with(".xlsx") {
+        return Err(ApiError::bad_request(
+            "file",
+            "unsupported_format",
+            "Legacy .xls files are not supported; save the workbook as .xlsx or CSV",
+        ));
+    }
+    let (headers, rows) = if file_name.ends_with(".xlsx") {
+        xlsx_rows(&bytes)?
+    } else {
+        csv_rows(&bytes)?
+    };
     for required in ["first_name", "last_name", "email"] {
         if !headers.iter().any(|h| h == required) {
             return Err(ApiError::bad_request(
                 "file",
                 "invalid",
-                format!("Missing required CSV column '{required}'"),
+                format!("Missing required column '{required}'"),
             ));
         }
+    }
+    if rows.len() > MAX_IMPORT_ROWS {
+        return Err(ApiError::bad_request(
+            "file",
+            "too_many_rows",
+            format!("Import is limited to {MAX_IMPORT_ROWS} rows per file"),
+        ));
     }
 
     let mut summary = ImportSummary {
@@ -600,39 +601,26 @@ pub async fn import_users(
     };
     let mut seen_emails: HashSet<String> = HashSet::new();
 
-    // Collect first: the CSV iterator is not `Send`, and it must not be held
-    // across the per-row database awaits.
-    let records: Vec<_> = reader.into_records().collect();
-
-    for (index, record) in records.into_iter().enumerate() {
-        if summary.total_rows >= MAX_IMPORT_ROWS {
-            return Err(ApiError::bad_request(
-                "file",
-                "too_many_rows",
-                format!("Import is limited to {MAX_IMPORT_ROWS} rows per file"),
-            ));
-        }
+    for row in rows {
         summary.total_rows += 1;
-        let row_number = index + 2;
-        let record = match record {
-            Ok(record) => record,
-            Err(e) => {
-                summary.failed += 1;
-                summary.errors.push(ImportRowError {
-                    row: row_number,
-                    email: None,
-                    error: format!("Malformed CSV row: {e}"),
-                });
-                continue;
-            }
-        };
+        let row_number = row.number;
+        if let Some(error) = row.error {
+            summary.failed += 1;
+            summary.errors.push(ImportRowError {
+                row: row_number,
+                email: None,
+                error,
+            });
+            continue;
+        }
 
         let cells: HashMap<String, String> = headers
             .iter()
             .enumerate()
             .filter_map(|(i, name)| {
-                record
+                row.cells
                     .get(i)
+                    .map(String::as_str)
                     .map(str::trim)
                     .filter(|v| !v.is_empty())
                     .map(|v| (name.clone(), v.to_string()))
@@ -683,6 +671,94 @@ pub async fn import_users(
     .await?;
 
     Ok(ApiResponse::success_with_message(summary, "Import processed"))
+}
+
+/// A data row parsed from either file format, numbered as it appears in the file.
+struct RawRow {
+    number: usize,
+    cells: Vec<String>,
+    error: Option<String>,
+}
+
+fn csv_rows(bytes: &[u8]) -> Result<(Vec<String>, Vec<RawRow>), ApiError> {
+    let mut reader = csv::ReaderBuilder::new()
+        .trim(csv::Trim::All)
+        .flexible(true)
+        .from_reader(bytes);
+    let headers = reader
+        .headers()
+        .map_err(|e| ApiError::bad_request("file", "invalid", format!("Invalid CSV header: {e}")))?
+        .iter()
+        .map(|h| h.trim().to_lowercase())
+        .collect();
+    let rows = reader
+        .into_records()
+        .enumerate()
+        .map(|(index, record)| RawRow {
+            number: index + 2,
+            cells: record
+                .as_ref()
+                .map(|r| r.iter().map(|c| c.trim().to_string()).collect())
+                .unwrap_or_default(),
+            error: record
+                .err()
+                .map(|e| format!("Malformed CSV row: {e}")),
+        })
+        .collect();
+    Ok((headers, rows))
+}
+
+fn xlsx_rows(bytes: &[u8]) -> Result<(Vec<String>, Vec<RawRow>), ApiError> {
+    use calamine::{Data, Reader, open_workbook_auto_from_rs};
+    use std::io::Cursor;
+
+    let mut workbook = open_workbook_auto_from_rs(Cursor::new(bytes.to_vec())).map_err(|e| {
+        ApiError::bad_request("file", "invalid", format!("Invalid spreadsheet: {e}"))
+    })?;
+    let range = workbook
+        .worksheet_range_at(0)
+        .ok_or_else(|| {
+            ApiError::bad_request("file", "invalid", "The workbook has no worksheet")
+        })?
+        .map_err(|e| ApiError::bad_request("file", "invalid", format!("Invalid spreadsheet: {e}")))?;
+
+    let cell_text = |cell: &Data| match cell {
+        Data::Empty => String::new(),
+        Data::String(value) => value.clone(),
+        other => other.to_string(),
+    };
+
+    let mut rows_iter = range.rows();
+    let header_row = rows_iter
+        .next()
+        .ok_or_else(|| ApiError::bad_request("file", "invalid", "The first worksheet is empty"))?;
+    let headers: Vec<String> = header_row
+        .iter()
+        .map(|cell| cell_text(cell).trim().to_lowercase())
+        .collect();
+    if headers.iter().all(|h| h.is_empty()) {
+        return Err(ApiError::bad_request(
+            "file",
+            "invalid",
+            "The first worksheet has no header row",
+        ));
+    }
+
+    let first_row = range.start().map(|(row, _)| row as usize).unwrap_or(0) + 2;
+    let rows = rows_iter
+        .enumerate()
+        .filter(|(_, cells)| {
+            cells
+                .iter()
+                .any(|cell| !cell_text(cell).trim().is_empty())
+        })
+        .map(|(index, cells)| RawRow {
+            number: first_row + index,
+            cells: cells.iter().map(cell_text).collect(),
+            error: None,
+        })
+        .collect();
+    Ok((headers, rows))
 }
 
 /// One row per transaction: a bad row never rolls back the good ones.
