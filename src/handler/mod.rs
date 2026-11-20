@@ -15,12 +15,13 @@ use uuid::Uuid;
 use crate::config::database::{Database, DatabaseTrait};
 use crate::dto::{
     AcceptInvitationRequest, CreateInvitationRequest, InvitationResponse, InvitePreview,
-    LoginRequest, LoginResponse, SessionResponse, UserProfile,
+    LoginRequest, LoginRequestBody, LoginResponse, SessionResponse, SetupAccountRequest,
+    UserProfile,
 };
 use crate::error::api_error::ApiError;
 use crate::middleware::auth::AuthContext;
 use crate::middleware::{client_ip, rbac, user_agent};
-use crate::repository::{audit, invitation, organization, role, session, user};
+use crate::repository::{audit, auth_token, invitation, organization, role, session, user};
 use crate::response::api_response::ApiResponse;
 use crate::service;
 
@@ -57,12 +58,37 @@ fn session_ttl() -> Duration {
     Duration::hours(hours.clamp(1, 24 * 30))
 }
 
-fn invite_base_url() -> String {
+pub(crate) fn invite_base_url() -> String {
     std::env::var("INVITE_BASE_URL").unwrap_or_else(|_| {
         let host = std::env::var("APP_URL").unwrap_or_else(|_| "127.0.0.1".to_string());
         let port = std::env::var("APP_PORT").unwrap_or_else(|_| "8000".to_string());
         format!("http://{host}:{port}")
     })
+}
+
+/// Create a session row and cookie token for an authenticated user.
+async fn issue_session(
+    pool: &sqlx::PgPool,
+    organization_id: Uuid,
+    user_id: Uuid,
+    headers: &HeaderMap,
+) -> Result<(String, Uuid, chrono::DateTime<Utc>), ApiError> {
+    let token = service::generate_token();
+    let expires_at = Utc::now() + session_ttl();
+    let row = session::create(
+        pool,
+        session::NewSession {
+            user_id,
+            organization_id,
+            token_hash: &service::hash_token(&token),
+            ip_address: client_ip(headers).as_deref(),
+            user_agent: user_agent(headers).as_deref(),
+            expires_at,
+        },
+    )
+    .await?;
+    user::touch_login(pool, organization_id, user_id).await?;
+    Ok((token, row.id, expires_at))
 }
 
 // ---------------------------------------------------------------- auth ----
@@ -127,22 +153,7 @@ pub async fn login(
         return Err(ApiError::Unauthorized);
     }
 
-    let token = service::generate_token();
-    let expires_at = Utc::now() + session_ttl();
-    let session_row = session::create(
-        pool,
-        session::NewSession {
-            user_id: user.id,
-            organization_id: org.id,
-            token_hash: &service::hash_token(&token),
-            ip_address: ip.as_deref(),
-            user_agent: user_agent(&headers).as_deref(),
-            expires_at,
-        },
-    )
-    .await?;
-
-    user::touch_login(pool, org.id, user.id).await?;
+    let (token, session_id, expires_at) = issue_session(pool, org.id, user.id, &headers).await?;
     let permissions = role::permissions_for_user(pool, org.id, user.id).await?;
 
     audit::insert(
@@ -152,7 +163,7 @@ pub async fn login(
             actor_user_id: Some(user.id),
             action: "login",
             entity_type: "session",
-            entity_id: Some(session_row.id),
+            entity_id: Some(session_id),
             metadata: json!({}),
             ip_address: ip.as_deref(),
         },
@@ -170,9 +181,214 @@ pub async fn login(
         ApiResponse::success(LoginResponse {
             user: user.into(),
             permissions,
-            session_id: session_row.id,
+            session_id,
             expires_at,
         }),
+    ))
+}
+
+const GENERIC_LOGIN_MESSAGE: &str =
+    "If that email belongs to an account, a sign-in link has been sent.";
+
+/// Email-first entry point. Always returns the same body and status, whether or
+/// not the email exists, so the endpoint cannot be used for enumeration.
+pub async fn login_request(
+    State(db): State<Arc<Database>>,
+    headers: HeaderMap,
+    Json(payload): Json<LoginRequestBody>,
+) -> Result<ApiResponse<serde_json::Value>, ApiError> {
+    let pool = db.get_pool();
+    let email = normalize_email(&payload.email);
+    let slug = normalize_slug(&payload.organization_slug);
+
+    let Some(org) = organization::find_by_slug(pool, &slug).await? else {
+        return Ok(ApiResponse::success_with_message(
+            json!({}),
+            GENERIC_LOGIN_MESSAGE,
+        ));
+    };
+
+    if let Some(user) = user::find_by_email(pool, org.id, &email).await? {
+        if matches!(user.status.as_str(), "invited" | "active") {
+            let purpose = if user.status == "invited" { "invite" } else { "login" };
+            let hours = if purpose == "invite" { 72 } else { 1 };
+            let token = service::generate_token();
+            let expires_at = Utc::now() + Duration::hours(hours);
+            auth_token::replace_live(
+                pool,
+                org.id,
+                user.id,
+                purpose,
+                &service::hash_token(&token),
+                expires_at,
+            )
+            .await?;
+
+            // No email module yet: the raw link is only ever written to the log.
+            let link = format!(
+                "{}/setup-account?token={token}",
+                invite_base_url().trim_end_matches('/')
+            );
+            log::info!("{purpose} link for {}: {link}", user.email);
+
+            audit::insert(
+                pool,
+                audit::Entry {
+                    organization_id: Some(org.id),
+                    actor_user_id: Some(user.id),
+                    action: "auth_link_requested",
+                    entity_type: "user",
+                    entity_id: Some(user.id),
+                    metadata: json!({ "purpose": purpose }),
+                    ip_address: client_ip(&headers).as_deref(),
+                },
+            )
+            .await?;
+        }
+    }
+
+    Ok(ApiResponse::success_with_message(
+        json!({}),
+        GENERIC_LOGIN_MESSAGE,
+    ))
+}
+
+/// Redeem an invite/magic link: set the password, complete the profile, verify
+/// the email, activate the account and start a session.
+pub async fn setup_account(
+    State(db): State<Arc<Database>>,
+    headers: HeaderMap,
+    Json(payload): Json<SetupAccountRequest>,
+) -> Result<impl IntoResponse, ApiError> {
+    if payload.password.len() < 8 {
+        return Err(ApiError::bad_request(
+            "password",
+            "too_short",
+            "Password must be at least 8 characters",
+        ));
+    }
+
+    let pool = db.get_pool();
+    let token_hash = service::hash_token(&payload.token);
+    let mut tx = pool.begin().await?;
+
+    let token = auth_token::lock_by_hash(&mut tx, &token_hash)
+        .await?
+        .ok_or_else(|| ApiError::bad_request("token", "invalid", "This link is not valid"))?;
+    if token.consumed_at.is_some() {
+        return Err(ApiError::bad_request(
+            "token",
+            "used",
+            "This link has already been used",
+        ));
+    }
+    if token.expires_at <= Utc::now() {
+        return Err(ApiError::bad_request(
+            "token",
+            "expired",
+            "This link has expired; request a new one",
+        ));
+    }
+
+    let user = crate::modules::users::repo::lock_user(&mut tx, token.organization_id, token.user_id)
+        .await?
+        .ok_or_else(|| ApiError::bad_request("token", "invalid", "This link is not valid"))?;
+    if !matches!(user.status.as_str(), "invited" | "active") {
+        return Err(ApiError::Conflict(
+            "This account cannot be set up".to_string(),
+        ));
+    }
+
+    let first_name = match payload.first_name.as_deref() {
+        Some(v) if !v.trim().is_empty() => v.trim().to_string(),
+        _ => user.first_name.clone(),
+    };
+    let last_name = match payload.last_name.as_deref() {
+        Some(v) if !v.trim().is_empty() => v.trim().to_string(),
+        _ => user.last_name.clone(),
+    };
+    if first_name.trim().is_empty() || last_name.trim().is_empty() {
+        return Err(ApiError::bad_request(
+            "first_name",
+            "required",
+            "First and last name are required",
+        ));
+    }
+
+    let locale = payload
+        .preferred_locale
+        .as_deref()
+        .unwrap_or(&user.preferred_locale)
+        .to_string();
+    if !["en", "fr", "ar"].contains(&locale.as_str()) {
+        return Err(ApiError::bad_request(
+            "preferred_locale",
+            "invalid",
+            "preferred_locale must be one of: en, fr, ar",
+        ));
+    }
+
+    let password_hash = service::hash_password(&payload.password).map_err(ApiError::Internal)?;
+    let activated = user::activate(
+        &mut tx,
+        token.organization_id,
+        user.id,
+        &first_name,
+        &last_name,
+        payload
+            .phone_number
+            .as_deref()
+            .or(user.phone_number.as_deref()),
+        user.avatar_url.as_deref(),
+        &locale,
+        &password_hash,
+    )
+    .await?;
+
+    if !auth_token::consume(&mut tx, token.organization_id, token.id).await? {
+        return Err(ApiError::bad_request(
+            "token",
+            "used",
+            "This link has already been used",
+        ));
+    }
+
+    audit::insert_tx(
+        &mut tx,
+        audit::Entry {
+            organization_id: Some(token.organization_id),
+            actor_user_id: Some(activated.id),
+            action: "account_setup",
+            entity_type: "user",
+            entity_id: Some(activated.id),
+            metadata: json!({ "locale": locale }),
+            ip_address: client_ip(&headers).as_deref(),
+        },
+    )
+    .await?;
+    tx.commit().await?;
+
+    let (session_token, session_id, expires_at) =
+        issue_session(pool, token.organization_id, activated.id, &headers).await?;
+    let permissions =
+        role::permissions_for_user(pool, token.organization_id, activated.id).await?;
+    let cookie = service::session_cookie(
+        &session_token,
+        session_ttl().num_seconds(),
+        service::cookie_secure(),
+    );
+
+    Ok((
+        [(header::SET_COOKIE, cookie)],
+        ApiResponse::success_with_message(
+            LoginResponse {
+                user: activated.into(),
+                permissions,
+                session_id,
+                expires_at,
+            },
+            "Account is ready",
+        ),
     ))
 }
 

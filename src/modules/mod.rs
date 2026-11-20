@@ -12,3 +12,4 @@ pub mod licenses;
 pub mod lookups;
 pub mod maintenances;
 pub mod products;
+pub mod users;

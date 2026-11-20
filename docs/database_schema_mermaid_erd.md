@@ -1,8 +1,7 @@
 # Database Schema — Mermaid ERD
 
-Source of truth: `migrations/0001_init.sql`, `0002_seed_rbac.sql`,
-`0003_core_lookups_assets.sql`. Every tenant table carries `organization_id`;
-all application queries filter on it.
+Source of truth: `migrations/0001_init.sql` … `0007_users_directory_auth.sql`.
+Every tenant table carries `organization_id`; all application queries filter on it.
 
 ```mermaid
 erDiagram
@@ -10,6 +9,8 @@ erDiagram
     organizations ||--o{ roles : "owns (system roles: NULL)"
     organizations ||--o{ invitations : "issues"
     organizations ||--o{ sessions : "tracks"
+    organizations ||--o{ auth_tokens : "issues"
+    organizations ||--o{ return_requests : "tracks"
     organizations ||--o{ audit_logs : "records"
     organizations ||--o{ departments : "owns"
     organizations ||--o{ categories : "owns"
@@ -30,6 +31,9 @@ erDiagram
     users ||--o{ sessions : "opens"
     users ||--o{ invitations : "invited by"
     users ||--o{ users : "assigned_by"
+    departments ||--o{ users : "staffs"
+    users ||--o{ auth_tokens : "receives"
+    users ||--o{ return_requests : "must return"
     users ||--o{ audit_logs : "acts"
     users ||--o{ locations : "manages"
     users ||--o{ assets : "holds custody"
@@ -96,14 +100,20 @@ erDiagram
         text first_name
         text last_name
         text email "unique per org, lowercase"
+        text employee_id "unique per org when set"
+        text job_title
+        uuid department_id FK
+        uuid manager_id FK "self-reference"
         text phone_number
         text avatar_url
-        text status "invited|active|suspended"
-        text preferred_locale "'en' default"
-        text password_hash
+        text status "invited|active|suspended|offboarded"
+        text preferred_locale "'en'|'fr'|'ar'"
+        text password_hash "NULL until setup"
         text auth_provider
+        timestamptz email_verified_at
         timestamptz last_login_at
         uuid location_id FK "home location"
+        timestamptz deleted_at "soft delete"
         timestamptz created_at
         timestamptz updated_at
     }
@@ -138,6 +148,31 @@ erDiagram
         timestamptz expires_at
         timestamptz revoked_at
         timestamptz created_at
+    }
+    auth_tokens {
+        uuid id PK
+        uuid organization_id FK
+        uuid user_id FK
+        text token_hash UK "SHA-256 only"
+        text purpose "invite|login"
+        timestamptz expires_at
+        timestamptz consumed_at
+        timestamptz created_at
+    }
+    return_requests {
+        uuid id PK
+        uuid organization_id FK
+        uuid user_id FK
+        text entity_type "asset|accessory|license"
+        uuid entity_id
+        int quantity "accessories only"
+        text status "pending|returned|cancelled"
+        uuid requested_by FK
+        uuid resolved_by FK
+        timestamptz resolved_at
+        text notes
+        timestamptz created_at
+        timestamptz updated_at
     }
     audit_logs {
         uuid id PK
@@ -542,3 +577,59 @@ Relationship rules (Milestone 4):
   restore on completion/cancel.
 - `audit_logs` remains append-only; `old_values`, `new_values` and `diff` are
   filled by the `audit_row_change()` trigger on every tracked table.
+
+## Milestone 5 — user directory & email-first auth
+
+Migration: `0007_users_directory_auth.sql`.
+
+```mermaid
+erDiagram
+    organizations ||--o{ auth_tokens : "issues"
+    organizations ||--o{ return_requests : "tracks"
+    users ||--o{ auth_tokens : "receives"
+    users ||--o{ users : "manager_id (reports to)"
+    departments ||--o{ users : "staffs"
+    locations ||--o{ users : "home location"
+    users ||--o{ return_requests : "must return"
+
+    auth_tokens {
+        uuid id PK
+        uuid organization_id FK
+        uuid user_id FK
+        text token_hash UK "SHA-256 only"
+        text purpose "invite|login"
+        timestamptz expires_at
+        timestamptz consumed_at
+        timestamptz created_at
+    }
+    return_requests {
+        uuid id PK
+        uuid organization_id FK
+        uuid user_id FK
+        text entity_type "asset|accessory|license"
+        uuid entity_id
+        int quantity "accessories only"
+        text status "pending|returned|cancelled"
+        uuid requested_by FK
+        uuid resolved_by FK
+        timestamptz resolved_at
+        text notes
+        timestamptz created_at
+        timestamptz updated_at
+    }
+```
+
+Relationship rules (Milestone 5):
+
+- `users.manager_id` is a self-FK (`ON DELETE SET NULL`); cycles and
+  self-management are rejected in `modules/users/repo.rs`.
+- `users.department_id` and `users.location_id` are optional; soft-deleted users
+  (`deleted_at IS NOT NULL`) are excluded from lookups and authentication.
+- `auth_tokens` stores only SHA-256 hashes. A partial unique index allows one
+  live token per `(organization_id, user_id, purpose)`; issuing a new one
+  replaces the previous live row.
+- `return_requests` is the offboarding worklist: one pending row per
+  `(organization_id, entity_type, entity_id)`, created by offboarding for
+  assets in custody, open accessory assignments and live license seats.
+- Permissions added: `users.create`, `users.delete`, `users.import`,
+  `users.offboard`; system role `employee` (read-only directory access).

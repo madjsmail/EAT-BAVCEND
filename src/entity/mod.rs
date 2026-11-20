@@ -35,13 +35,31 @@ pub struct User {
     pub email: String,
     pub phone_number: Option<String>,
     pub avatar_url: Option<String>,
+    pub location_id: Option<Uuid>,
     pub status: String,
     pub preferred_locale: String,
     pub password_hash: Option<String>,
     pub auth_provider: String,
+    pub employee_id: Option<String>,
+    pub job_title: Option<String>,
+    pub department_id: Option<Uuid>,
+    pub manager_id: Option<Uuid>,
+    pub email_verified_at: Option<DateTime<Utc>>,
+    pub deleted_at: Option<DateTime<Utc>>,
     pub last_login_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, FromRow, Serialize)]
+pub struct AuthToken {
+    pub id: Uuid,
+    pub organization_id: Uuid,
+    pub user_id: Uuid,
+    pub purpose: String,
+    pub expires_at: DateTime<Utc>,
+    pub consumed_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize)]

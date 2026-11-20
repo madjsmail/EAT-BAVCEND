@@ -43,7 +43,7 @@ pub mod user {
         organization_id: Uuid,
         email: &str,
     ) -> sqlx::Result<Option<User>> {
-        sqlx::query_as::<_, User>("SELECT * FROM users WHERE organization_id = $1 AND email = $2")
+        sqlx::query_as::<_, User>("SELECT * FROM users WHERE organization_id = $1 AND email = $2 AND deleted_at IS NULL")
             .bind(organization_id)
             .bind(email)
             .fetch_optional(pool)
@@ -55,7 +55,7 @@ pub mod user {
         organization_id: Uuid,
         id: Uuid,
     ) -> sqlx::Result<Option<User>> {
-        sqlx::query_as::<_, User>("SELECT * FROM users WHERE organization_id = $1 AND id = $2")
+        sqlx::query_as::<_, User>("SELECT * FROM users WHERE organization_id = $1 AND id = $2 AND deleted_at IS NULL")
             .bind(organization_id)
             .bind(id)
             .fetch_optional(pool)
@@ -115,6 +115,7 @@ pub mod user {
             UPDATE users SET
                 first_name = $3, last_name = $4, phone_number = $5, avatar_url = $6,
                 preferred_locale = $7, password_hash = $8, status = 'active',
+                email_verified_at = COALESCE(email_verified_at, now()),
                 updated_at = now()
             WHERE organization_id = $1 AND id = $2
             RETURNING *
@@ -516,6 +517,78 @@ pub mod session {
             .bind(id)
             .fetch_optional(pool)
             .await
+    }
+}
+
+pub mod auth_token {
+    use super::*;
+    use crate::entity::AuthToken;
+
+    /// Issue a single-use token, superseding the previous live one for the same
+    /// user/purpose. Only the SHA-256 hash is stored.
+    pub async fn replace_live(
+        pool: &PgPool,
+        organization_id: Uuid,
+        user_id: Uuid,
+        purpose: &str,
+        token_hash: &str,
+        expires_at: DateTime<Utc>,
+    ) -> sqlx::Result<AuthToken> {
+        let mut tx = pool.begin().await?;
+        sqlx::query(
+            "DELETE FROM auth_tokens
+             WHERE organization_id = $1 AND user_id = $2 AND purpose = $3 AND consumed_at IS NULL",
+        )
+        .bind(organization_id)
+        .bind(user_id)
+        .bind(purpose)
+        .execute(&mut *tx)
+        .await?;
+
+        let row = sqlx::query_as::<_, AuthToken>(
+            r#"
+            INSERT INTO auth_tokens (organization_id, user_id, token_hash, purpose, expires_at)
+            VALUES ($1, $2, $3, $4, $5)
+            RETURNING *
+            "#,
+        )
+        .bind(organization_id)
+        .bind(user_id)
+        .bind(token_hash)
+        .bind(purpose)
+        .bind(expires_at)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok(row)
+    }
+
+    /// Lock the token row so a link can only be redeemed once.
+    pub async fn lock_by_hash(
+        conn: &mut PgConnection,
+        token_hash: &str,
+    ) -> sqlx::Result<Option<AuthToken>> {
+        sqlx::query_as::<_, AuthToken>("SELECT * FROM auth_tokens WHERE token_hash = $1 FOR UPDATE")
+            .bind(token_hash)
+            .fetch_optional(conn)
+            .await
+    }
+
+    pub async fn consume(
+        conn: &mut PgConnection,
+        organization_id: Uuid,
+        id: Uuid,
+    ) -> sqlx::Result<bool> {
+        let result = sqlx::query(
+            "UPDATE auth_tokens SET consumed_at = now()
+             WHERE organization_id = $1 AND id = $2 AND consumed_at IS NULL",
+        )
+        .bind(organization_id)
+        .bind(id)
+        .execute(conn)
+        .await?;
+        Ok(result.rows_affected() > 0)
     }
 }
 

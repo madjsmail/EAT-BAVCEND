@@ -6,6 +6,15 @@ use uuid::Uuid;
 
 use crate::error::api_error::ApiError;
 
+/// Basic deliverable email shape check; callers attach the field error.
+pub fn valid_email(email: &str) -> bool {
+    email.len() <= 254
+        && email.contains('@')
+        && !email.starts_with('@')
+        && !email.ends_with('@')
+        && !email.contains(' ')
+}
+
 /// Distinguishes three PATCH states for a nullable field:
 /// absent -> `None`, explicit `null` -> `Some(None)`, value -> `Some(Some(v))`.
 pub fn double_option<'de, T, D>(deserializer: D) -> Result<Option<Option<T>>, D::Error>

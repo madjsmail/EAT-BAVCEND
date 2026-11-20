@@ -755,16 +755,32 @@ async fn upsert_license(
 
 const DEMO_PASSWORD: &str = "Demo1234!";
 
-/// `(email, first name, last name, role code)`.
-const DEMO_USERS: [(&str, &str, &str, &str); 4] = [
-    ("admin@demo.local", "Ada", "Lovelace", "admin"),
-    ("manager@demo.local", "Grace", "Hopper", "manager"),
-    ("tech@demo.local", "Linus", "Torvalds", "technician"),
-    ("viewer@demo.local", "Sam", "Carter", "viewer"),
+/// `(email, first, last, role, employee_id, job_title, department code, locale, status, manager index)`
+const DEMO_USERS: [(&str, &str, &str, &str, &str, &str, &str, &str, &str, Option<usize>); 20] = [
+    ("admin@demo.local", "Ada", "Lovelace", "admin", "EMP-001", "IT Director", "IT", "en", "active", None),
+    ("manager@demo.local", "Grace", "Hopper", "manager", "EMP-002", "IT Manager", "IT", "en", "active", Some(0)),
+    ("tech@demo.local", "Linus", "Torvalds", "technician", "EMP-003", "IT Support Specialist", "IT", "en", "active", Some(1)),
+    ("viewer@demo.local", "Sam", "Carter", "viewer", "EMP-004", "Finance Analyst", "FIN", "en", "active", Some(1)),
+    ("nadia.bouazizi@demo.local", "Nadia", "Bouazizi", "employee", "EMP-005", "Marketing Specialist", "COMM", "fr", "invited", Some(1)),
+    ("youssef.trabelsi@demo.local", "Youssef", "Trabelsi", "manager", "EMP-006", "Finance Manager", "FIN", "ar", "active", Some(0)),
+    ("amira.haddad@demo.local", "Amira", "Haddad", "employee", "EMP-007", "Accountant", "FIN", "fr", "active", Some(5)),
+    ("mohamed.salah@demo.local", "Mohamed", "Salah", "employee", "EMP-008", "HR Officer", "HR", "ar", "active", Some(8)),
+    ("sophie.martin@demo.local", "Sophie", "Martin", "manager", "EMP-009", "HR Manager", "HR", "fr", "active", Some(0)),
+    ("karim.jaziri@demo.local", "Karim", "Jaziri", "employee", "EMP-010", "Network Engineer", "IT", "ar", "active", Some(1)),
+    ("lina.gharbi@demo.local", "Lina", "Gharbi", "employee", "EMP-011", "Procurement Officer", "FIN", "fr", "active", Some(5)),
+    ("omar.ben.ali@demo.local", "Omar", "Ben Ali", "employee", "EMP-012", "Facilities Coordinator", "COMM", "ar", "active", Some(1)),
+    ("claire.dubois@demo.local", "Claire", "Dubois", "employee", "EMP-013", "Communications Lead", "COMM", "fr", "active", Some(1)),
+    ("mehdi.ayari@demo.local", "Mehdi", "Ayari", "employee", "EMP-014", "Helpdesk Technician", "IT", "ar", "active", Some(2)),
+    ("sara.khelifi@demo.local", "Sara", "Khelifi", "employee", "EMP-015", "Data Analyst", "FIN", "fr", "active", Some(5)),
+    ("ahmed.mansour@demo.local", "Ahmed", "Mansour", "employee", "EMP-016", "Sales Executive", "COMM", "ar", "active", Some(1)),
+    ("julie.bernard@demo.local", "Julie", "Bernard", "employee", "EMP-017", "Legal Counsel", "HR", "fr", "active", Some(8)),
+    ("walid.hamdi@demo.local", "Walid", "Hamdi", "employee", "EMP-018", "Warehouse Assistant", "COMM", "ar", "active", Some(1)),
+    ("ines.bouhlel@demo.local", "Ines", "Bouhlel", "employee", "EMP-019", "Support Agent", "COMM", "fr", "offboarded", Some(1)),
+    ("thomas.lefevre@demo.local", "Thomas", "Lefevre", "employee", "EMP-020", "Systems Administrator", "IT", "fr", "active", Some(1)),
 ];
 
 /// `(asset_tag, product index, status code, department code, assignee, warranty offset, purchase offset, cost)`
-const DEMO_ASSETS: [(&str, usize, &str, &str, Option<usize>, Option<i32>, i32, &str); 8] = [
+const DEMO_ASSETS: [(&str, usize, &str, &str, Option<usize>, Option<i32>, i32, &str); 9] = [
     ("LAP-0001", 0, "deployed", "IT", Some(0), Some(-40), 900, "1450.00"),
     ("LAP-0002", 0, "deployed", "FIN", Some(1), Some(15), 620, "1450.00"),
     ("LAP-0003", 0, "ready_to_deploy", "IT", None, Some(45), 300, "1450.00"),
@@ -773,6 +789,8 @@ const DEMO_ASSETS: [(&str, usize, &str, &str, Option<usize>, Option<i32>, i32, &
     ("TLPH-0002", 1, "broken", "COMM", None, None, 540, "280.00"),
     ("HDST-0001", 2, "deployed", "IT", Some(3), Some(25), 210, "210.00"),
     ("HDST-0002", 2, "ready_to_deploy", "HR", None, Some(55), 120, "210.00"),
+    // Belongs to the offboarded demo user, so the directory shows a live custody.
+    ("TLPH-0003", 1, "deployed", "COMM", Some(18), None, 300, "280.00"),
 ];
 
 async fn seed_demo_users(
@@ -781,21 +799,59 @@ async fn seed_demo_users(
     location_id: Uuid,
 ) -> Result<Vec<Uuid>, sqlx::Error> {
     let hash =
-        crate::service::hash_password(DEMO_PASSWORD).map_err(|e| sqlx::Error::Protocol(e))?;
+        crate::service::hash_password(DEMO_PASSWORD).map_err(sqlx::Error::Protocol)?;
     let mut ids = Vec::with_capacity(DEMO_USERS.len());
 
-    for (email, first_name, last_name, role_code) in DEMO_USERS.iter() {
+    for (
+        email,
+        first_name,
+        last_name,
+        role_code,
+        employee_id,
+        job_title,
+        department_code,
+        locale,
+        status,
+        _,
+    ) in DEMO_USERS.iter()
+    {
         sqlx::query(
-            "INSERT INTO users
-                (organization_id, first_name, last_name, email, status, preferred_locale,
-                 password_hash, location_id)
-             VALUES ($1, $2, $3, $4, 'active', 'en', $5, $6)
-             ON CONFLICT (organization_id, email) DO NOTHING",
+            r#"
+            INSERT INTO users
+                (organization_id, first_name, last_name, email, employee_id, job_title,
+                 department_id, preferred_locale, status, password_hash, email_verified_at,
+                 location_id)
+            VALUES ($1, $2, $3, $4, $5, $6,
+                    (SELECT id FROM departments WHERE organization_id = $1 AND code = $7),
+                    $8, $9, $10,
+                    CASE WHEN $9 = 'active' THEN now() ELSE NULL END,
+                    $11)
+            ON CONFLICT (organization_id, email) DO UPDATE SET
+                first_name = EXCLUDED.first_name,
+                last_name = EXCLUDED.last_name,
+                employee_id = EXCLUDED.employee_id,
+                job_title = EXCLUDED.job_title,
+                department_id = EXCLUDED.department_id,
+                preferred_locale = EXCLUDED.preferred_locale,
+                status = EXCLUDED.status,
+                password_hash = CASE WHEN EXCLUDED.status = 'invited' THEN NULL
+                                     ELSE COALESCE(users.password_hash, EXCLUDED.password_hash) END,
+                email_verified_at = CASE WHEN EXCLUDED.status = 'active'
+                                         THEN COALESCE(users.email_verified_at, now())
+                                         ELSE NULL END,
+                location_id = EXCLUDED.location_id,
+                updated_at = now()
+            "#,
         )
         .bind(org)
         .bind(first_name)
         .bind(last_name)
         .bind(email)
+        .bind(employee_id)
+        .bind(job_title)
+        .bind(department_code)
+        .bind(locale)
+        .bind(status)
         .bind(&hash)
         .bind(location_id)
         .execute(&mut *conn)
@@ -819,6 +875,23 @@ async fn seed_demo_users(
         .bind(role_code)
         .execute(&mut *conn)
         .await?;
+    }
+
+    // Second pass: the reporting hierarchy needs every id resolved first.
+    for (index, (_, _, _, _, _, _, _, _, _, manager)) in DEMO_USERS.iter().enumerate() {
+        if let Some(manager_index) = manager {
+            if let Some(manager_id) = ids.get(*manager_index) {
+                sqlx::query(
+                    "UPDATE users SET manager_id = $1, updated_at = now()
+                     WHERE organization_id = $2 AND id = $3",
+                )
+                .bind(manager_id)
+                .bind(org)
+                .bind(ids[index])
+                .execute(&mut *conn)
+                .await?;
+            }
+        }
     }
 
     Ok(ids)

@@ -23,7 +23,7 @@ seed), `0003_core_lookups_assets.sql` (lookups, catalog, assets, custody).
 | `permissions` | Global, `code` unique (`assets.read`, `lookups.write`, ...). |
 | `roles` | `code` unique; `organization_id` NULL = system role shared by tenants; `is_system` marks seeded roles. |
 | `role_permissions` | PK `(role_id, permission_id)`. |
-| `users` | `email = lower(email)`; `UNIQUE (organization_id, email)`; `status IN ('invited','active','suspended')`; `preferred_locale` default `'en'`; `location_id` FK → `locations` (home location, `ON DELETE SET NULL`). |
+| `users` | `email = lower(email)`; `UNIQUE (organization_id, email)`; `status IN ('invited','active','suspended','offboarded')`; `preferred_locale IN ('en','fr','ar')` default `'en'`; `location_id` FK → `locations` (home location, `ON DELETE SET NULL`); `department_id` FK → `departments` (`SET NULL`); `manager_id` self-FK (`SET NULL`, `CHECK (manager_id <> id)`); `employee_id` unique per org case-insensitively when non-blank; `deleted_at` soft delete; `email_verified_at` set on activation. |
 | `user_roles` | `UNIQUE (organization_id, user_id, role_id)`. |
 | `invitations` | `token_hash` unique (SHA-256 only); `status IN ('pending','accepted','expired','revoked')`; at most one `pending` row per `(organization_id, email)` via partial unique index. |
 | `sessions` | `token_hash` unique; `revoked_at` NULL = live; expiry checked in the auth extractor. |
@@ -272,3 +272,71 @@ New columns: `actor_user_agent TEXT`, `old_values JSONB`, `new_values JSONB`,
 
 `maintenances.read`, `maintenances.write`, `attachments.read`,
 `attachments.write`, `audit.read`, `dashboard.read`.
+
+## User directory & email-first auth (Milestone 5)
+
+Migration: `20260101000007_users_directory_auth.sql`.
+
+### `users` (extended)
+
+- `employee_id TEXT` — internal HR id; unique per organization case-insensitively
+  when non-blank (partial index `users_employee_id_key`).
+- `job_title TEXT`, `department_id UUID` (FK → `departments`, `SET NULL`),
+  `manager_id UUID` (self-FK, `SET NULL`, `CHECK (manager_id <> id)`).
+- `email_verified_at TIMESTAMPTZ` — set by `user::activate` / `setup-account`.
+- `deleted_at TIMESTAMPTZ` — soft delete; every user read filters it out.
+- `status` now includes `offboarded`; `preferred_locale` is constrained to
+  `('en','fr','ar')`.
+
+### `auth_tokens`
+
+Single-use email tokens for both invitations and magic logins.
+
+| Column | Rule |
+| --- | --- |
+| `user_id` | FK → `users` `ON DELETE CASCADE`. |
+| `token_hash` | `UNIQUE`; only SHA-256 hashes are stored. |
+| `purpose` | `invite` (72 h) or `login` (1 h). |
+| `expires_at`, `consumed_at` | Expiry checked on use; consumed tokens are kept for audit. |
+
+Partial unique index `auth_tokens_one_live_idx (organization_id, user_id, purpose)`
+`WHERE consumed_at IS NULL`; issuing a new token replaces the previous live row
+(`repository::auth_token::replace_live`). Flow: `POST /auth/login-request`
+always returns the same generic message, creates a token for known users and logs
+the link; `POST /auth/setup-account` locks the token, validates expiry, activates
+the user, consumes the token and issues a session cookie.
+
+### `return_requests`
+
+Offboarding worklist for custody held by the departing user.
+
+| Column | Rule |
+| --- | --- |
+| `entity_type` | `asset`, `accessory`, `license`. |
+| `entity_id` | Target row (polymorphic; no FK). |
+| `quantity` | Accessories only, `> 0`; NULL for assets and licenses. |
+| `status` | `pending` (default), `returned`, `cancelled`. |
+| `requested_by` / `resolved_by` | FK → `users`, `SET NULL`. |
+| `resolved_at`, `notes` | Resolution metadata. |
+
+Partial unique index `return_requests_one_pending_idx
+(organization_id, entity_type, entity_id) WHERE status = 'pending'`.
+`POST /users/{id}/offboard` creates one pending row per asset in custody, open
+accessory assignment (remaining quantity) and live license seat, reassigns direct
+reports (a `new_manager_id` is required when reports exist), revokes sessions and
+writes an audit row — all in one transaction.
+
+### Import
+
+`POST /users/import` accepts CSV (`multipart/form-data`, field `file`):
+required `first_name,last_name,email`; optional `employee_id,job_title,
+department,location,manager_email,preferred_locale,phone_number`. Unknown
+departments are created (code derived from the name, capped at 8 chars). Each row
+is its own transaction; imported users are `invited` with no password and get the
+system `employee` role. XLSX is rejected with a 400.
+
+### Permissions added
+
+`users.create`, `users.delete`, `users.import`, `users.offboard`. Admin: all;
+manager: create/import/offboard. System role `employee`: `organizations.read`,
+`users.read`.

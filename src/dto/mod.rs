@@ -45,6 +45,22 @@ impl From<crate::entity::User> for UserProfile {
     }
 }
 
+#[derive(Debug, Deserialize)]
+pub struct LoginRequestBody {
+    pub organization_slug: String,
+    pub email: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetupAccountRequest {
+    pub token: String,
+    pub password: String,
+    pub first_name: Option<String>,
+    pub last_name: Option<String>,
+    pub phone_number: Option<String>,
+    pub preferred_locale: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct LoginResponse {
     pub user: UserProfile,

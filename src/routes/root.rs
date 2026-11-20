@@ -29,6 +29,8 @@ pub fn app(db_conn: Arc<Database>) -> Router {
         .route("/health", get(health))
         // Public (invite-only) auth surface.
         .route("/auth/login", post(handler::login))
+        .route("/auth/login-request", post(handler::login_request))
+        .route("/auth/setup-account", post(handler::setup_account))
         .route("/invite/{token}", get(handler::preview_invitation))
         .route("/invitations/accept", post(handler::accept_invitation))
         // Authenticated surface.
@@ -47,8 +49,7 @@ pub fn app(db_conn: Arc<Database>) -> Router {
         .route("/sessions/{id}", delete(handler::revoke_session))
         .route("/users/{id}/status", patch(handler::update_user_status))
         // Milestone 2: lookups, catalog, assets, custody.
-        .merge(crate::modules::lookups::router())
-        .merge(crate::modules::products::router())
+        .merge(crate::modules::lookups::router())        .merge(crate::modules::products::router())
         .merge(crate::modules::assets::router())
         // Milestone 3: accessories, consumables, licenses.
         .merge(crate::modules::accessories::router())
@@ -60,7 +61,9 @@ pub fn app(db_conn: Arc<Database>) -> Router {
         // Milestone 4: Audit Log Explorer.
         .merge(crate::modules::audit::router())
         // Milestone 4: executive dashboard aggregations.
-        .merge(crate::modules::dashboard::router());
+        .merge(crate::modules::dashboard::router())
+        // Milestone 5: employee directory, hierarchy and offboarding.
+        .merge(crate::modules::users::router());
 
     Router::<Arc<Database>>::new()
         .nest("/v1/api", api)
