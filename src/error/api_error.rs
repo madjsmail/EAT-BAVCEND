@@ -9,6 +9,9 @@ use thiserror::Error;
 pub enum ApiError {
     #[error("Authentication required")]
     Unauthorized,
+    /// Field-level validation failure. Maps to 422 with every detail in `error_stack`.
+    #[error("Validation failed")]
+    Validation(Vec<ErrorDetail>),
     #[error("Missing permission: {0}")]
     Forbidden(String),
     #[error("{0} not found")]
@@ -78,11 +81,23 @@ impl IntoResponse for ApiError {
             log::error!("Database error: {e}");
         }
 
+        // Validation carries per-field details, so it skips the single-detail path.
+        if let ApiError::Validation(details) = &self {
+            return ApiResponse::<()>::error(422, "Validation failed", details.clone())
+                .into_response();
+        }
+
         let (status, code, message, field) = match self {
             ApiError::Unauthorized => (
                 StatusCode::UNAUTHORIZED,
                 "unauthorized",
                 "Authentication required".to_string(),
+                None,
+            ),
+            ApiError::Validation(_) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "validation_error",
+                "Validation failed".to_string(),
                 None,
             ),
             ApiError::Forbidden(perm) => (

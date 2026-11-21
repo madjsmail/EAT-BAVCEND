@@ -156,6 +156,59 @@ pub mod user {
         Ok(())
     }
 
+    /// Self-service profile fields. Email, role, status and tenant are not
+    /// self-editable and are deliberately absent from this statement.
+    pub async fn update_profile(
+        pool: &PgPool,
+        organization_id: Uuid,
+        id: Uuid,
+        first_name: Option<&str>,
+        last_name: Option<&str>,
+        phone_number: Option<&str>,
+        avatar_url: Option<&str>,
+        preferred_locale: Option<&str>,
+    ) -> sqlx::Result<Option<User>> {
+        sqlx::query_as::<_, User>(
+            r#"
+            UPDATE users
+            SET first_name       = COALESCE($3, first_name),
+                last_name        = COALESCE($4, last_name),
+                phone_number     = COALESCE($5, phone_number),
+                avatar_url       = COALESCE($6, avatar_url),
+                preferred_locale = COALESCE($7, preferred_locale),
+                updated_at       = now()
+            WHERE organization_id = $1 AND id = $2 AND deleted_at IS NULL
+            RETURNING *
+            "#,
+        )
+        .bind(organization_id)
+        .bind(id)
+        .bind(first_name)
+        .bind(last_name)
+        .bind(phone_number)
+        .bind(avatar_url)
+        .bind(preferred_locale)
+        .fetch_optional(pool)
+        .await
+    }
+
+    pub async fn update_password(
+        pool: &PgPool,
+        organization_id: Uuid,
+        id: Uuid,
+        password_hash: &str,
+    ) -> sqlx::Result<bool> {
+        let result = sqlx::query(
+            "UPDATE users SET password_hash = $3, updated_at = now() WHERE organization_id = $1 AND id = $2 AND deleted_at IS NULL",
+        )
+        .bind(organization_id)
+        .bind(id)
+        .bind(password_hash)
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     /// Suspend or reactivate a user. Suspension always revokes their sessions.
     pub async fn set_status(
         pool: &PgPool,
@@ -529,6 +582,35 @@ pub mod session {
             .bind(id)
             .fetch_optional(pool)
             .await
+    }
+
+    /// All-devices logout: revoke everything except the caller's session.
+    pub async fn revoke_all_except(
+        pool: &PgPool,
+        organization_id: Uuid,
+        user_id: Uuid,
+        keep: Uuid,
+    ) -> sqlx::Result<u64> {
+        let result = sqlx::query(
+            "UPDATE sessions SET revoked_at = now() WHERE organization_id = $1 AND user_id = $2 AND id <> $3 AND revoked_at IS NULL",
+        )
+        .bind(organization_id)
+        .bind(user_id)
+        .bind(keep)
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
+    /// Refresh `last_seen_at`, throttled to once a minute to keep the auth path cheap.
+    pub async fn touch_last_seen(pool: &PgPool, id: Uuid) -> sqlx::Result<()> {
+        sqlx::query(
+            "UPDATE sessions SET last_seen_at = now() WHERE id = $1 AND last_seen_at < now() - interval '1 minute'",
+        )
+        .bind(id)
+        .execute(pool)
+        .await?;
+        Ok(())
     }
 }
 

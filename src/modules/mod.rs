@@ -11,5 +11,6 @@ pub mod i18n;
 pub mod licenses;
 pub mod lookups;
 pub mod maintenances;
+pub mod organization;
 pub mod products;
 pub mod users;

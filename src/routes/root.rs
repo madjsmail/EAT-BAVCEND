@@ -36,6 +36,14 @@ pub fn app(db_conn: Arc<Database>) -> Router {
         // Authenticated surface.
         .route("/auth/logout", post(handler::logout))
         .route("/auth/me", get(handler::me))
+        // Self-service profile (Milestone 5 settings).
+        .route("/me", get(handler::get_me).patch(handler::update_me))
+        .route("/me/password", post(handler::change_password))
+        .route(
+            "/me/sessions",
+            get(handler::list_sessions).delete(handler::revoke_other_sessions),
+        )
+        .route("/me/sessions/{id}", delete(handler::revoke_session))
         .route(
             "/invitations",
             post(handler::create_invitation).get(handler::list_invitations),
@@ -63,7 +71,9 @@ pub fn app(db_conn: Arc<Database>) -> Router {
         // Milestone 4: executive dashboard aggregations.
         .merge(crate::modules::dashboard::router())
         // Milestone 5: employee directory, hierarchy and offboarding.
-        .merge(crate::modules::users::router());
+        .merge(crate::modules::users::router())
+        // Milestone 5: self-service profile and organization settings.
+        .merge(crate::modules::organization::router());
 
     Router::<Arc<Database>>::new()
         .nest("/v1/api", api)

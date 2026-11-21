@@ -121,6 +121,76 @@ pub struct SessionResponse {
     pub ip_address: Option<String>,
     pub user_agent: Option<String>,
     pub created_at: DateTime<Utc>,
+    pub last_seen_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
     pub current: bool,
+    pub is_current: bool,
+}
+
+/// Full self profile returned by `GET /v1/api/me`.
+#[derive(Debug, Serialize)]
+pub struct ProfileResponse {
+    pub id: Uuid,
+    pub organization_id: Uuid,
+    pub email: String,
+    pub first_name: String,
+    pub last_name: String,
+    /// Convenience full name: `"{first_name} {last_name}"`.
+    pub name: String,
+    pub phone_number: Option<String>,
+    pub avatar_url: Option<String>,
+    pub status: String,
+    pub preferred_locale: String,
+    pub auth_provider: String,
+    pub employee_id: Option<String>,
+    pub job_title: Option<String>,
+    pub roles: Vec<String>,
+    pub role: Option<String>,
+    pub email_verified_at: Option<DateTime<Utc>>,
+    pub last_login_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl ProfileResponse {
+    pub fn new(u: crate::entity::User, roles: Vec<String>) -> Self {
+        Self {
+            id: u.id,
+            organization_id: u.organization_id,
+            email: u.email,
+            name: format!("{} {}", u.first_name, u.last_name).trim().to_string(),
+            first_name: u.first_name,
+            last_name: u.last_name,
+            phone_number: u.phone_number,
+            avatar_url: u.avatar_url,
+            status: u.status,
+            preferred_locale: u.preferred_locale,
+            auth_provider: u.auth_provider,
+            employee_id: u.employee_id,
+            job_title: u.job_title,
+            role: roles.first().cloned(),
+            roles,
+            email_verified_at: u.email_verified_at,
+            last_login_at: u.last_login_at,
+            created_at: u.created_at,
+            updated_at: u.updated_at,
+        }
+    }
+}
+
+/// `PATCH /v1/api/me`. Email, role, status and tenant are not self-editable.
+#[derive(Debug, Deserialize)]
+pub struct UpdateProfileRequest {
+    pub first_name: Option<String>,
+    pub last_name: Option<String>,
+    pub phone_number: Option<String>,
+    pub avatar_url: Option<String>,
+    pub preferred_locale: Option<String>,
+}
+
+/// `POST /v1/api/me/password`.
+#[derive(Debug, Deserialize)]
+pub struct ChangePasswordRequest {
+    pub current_password: String,
+    pub new_password: String,
 }

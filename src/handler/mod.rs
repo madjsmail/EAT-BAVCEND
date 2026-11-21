@@ -14,15 +14,15 @@ use uuid::Uuid;
 
 use crate::config::database::{Database, DatabaseTrait};
 use crate::dto::{
-    AcceptInvitationRequest, CreateInvitationRequest, InvitationResponse, InvitePreview,
-    LoginRequest, LoginRequestBody, LoginResponse, SessionResponse, SetupAccountRequest,
-    UserProfile,
+    AcceptInvitationRequest, ChangePasswordRequest, CreateInvitationRequest, InvitationResponse,
+    InvitePreview, LoginRequest, LoginRequestBody, LoginResponse, ProfileResponse,
+    SessionResponse, SetupAccountRequest, UpdateProfileRequest, UserProfile,
 };
 use crate::error::api_error::ApiError;
 use crate::middleware::auth::AuthContext;
 use crate::middleware::{client_ip, rbac, user_agent};
 use crate::repository::{audit, auth_token, invitation, organization, role, session, user};
-use crate::response::api_response::ApiResponse;
+use crate::response::api_response::{ApiResponse, ErrorDetail};
 use crate::service;
 
 fn normalize_email(email: &str) -> String {
@@ -788,8 +788,10 @@ pub async fn list_sessions(
                 ip_address: s.ip_address,
                 user_agent: s.user_agent,
                 created_at: s.created_at,
+                last_seen_at: s.last_seen_at,
                 expires_at: s.expires_at,
                 current: s.id == current,
+                is_current: s.id == current,
             })
             .collect(),
     ))
@@ -932,4 +934,214 @@ pub async fn update_user_status(
     .await?;
 
     Ok(ApiResponse::success(updated.into()))
+}
+
+// ------------------------------------------------- self-service profile ----
+
+fn validation(field: &str, code: &str, message: &str) -> ErrorDetail {
+    ErrorDetail {
+        field: Some(field.to_string()),
+        code: code.to_string(),
+        message: message.to_string(),
+    }
+}
+
+/// `GET /v1/api/me` — the caller's own profile, roles included.
+pub async fn get_me(
+    State(db): State<Arc<Database>>,
+    ctx: AuthContext,
+) -> Result<ApiResponse<ProfileResponse>, ApiError> {
+    let roles = role::roles_for_user(db.get_pool(), ctx.organization_id(), ctx.user.id)
+        .await?
+        .into_iter()
+        .map(|r| r.code)
+        .collect();
+    Ok(ApiResponse::success(ProfileResponse::new(ctx.user, roles)))
+}
+
+/// `PATCH /v1/api/me` — only self-editable fields; email/role/tenant are ignored.
+pub async fn update_me(
+    State(db): State<Arc<Database>>,
+    ctx: AuthContext,
+    Json(payload): Json<UpdateProfileRequest>,
+) -> Result<ApiResponse<ProfileResponse>, ApiError> {
+    let mut errors = Vec::new();
+
+    let first_name = payload.first_name.as_deref().map(str::trim);
+    let last_name = payload.last_name.as_deref().map(str::trim);
+    for (field, value) in [("first_name", first_name), ("last_name", last_name)] {
+        if value.is_some_and(str::is_empty) {
+            errors.push(validation(field, "required", "This field cannot be empty"));
+        }
+        if value.is_some_and(|v| v.chars().count() > 100) {
+            errors.push(validation(field, "too_long", "Maximum 100 characters"));
+        }
+    }
+
+    let phone_number = payload.phone_number.as_deref().map(str::trim);
+    if phone_number.is_some_and(|v| v.chars().count() > 40) {
+        errors.push(validation(
+            "phone_number",
+            "too_long",
+            "Maximum 40 characters",
+        ));
+    }
+
+    let avatar_url = payload.avatar_url.as_deref().map(str::trim);
+    if avatar_url.is_some_and(|v| {
+        v.chars().count() > 1000 || !(v.starts_with("http://") || v.starts_with("https://"))
+    }) {
+        errors.push(validation(
+            "avatar_url",
+            "invalid",
+            "avatar_url must be an http(s) URL",
+        ));
+    }
+
+    let locale = payload.preferred_locale.as_deref().map(str::trim);
+    if locale.is_some_and(|v| !["en", "fr", "ar"].contains(&v)) {
+        errors.push(validation(
+            "preferred_locale",
+            "invalid",
+            "preferred_locale must be one of: en, fr, ar",
+        ));
+    }
+
+    if !errors.is_empty() {
+        return Err(ApiError::Validation(errors));
+    }
+
+    let pool = db.get_pool();
+    let organization_id = ctx.organization_id();
+    let updated = user::update_profile(
+        pool,
+        organization_id,
+        ctx.user.id,
+        first_name,
+        last_name,
+        phone_number,
+        avatar_url,
+        locale,
+    )
+    .await?
+    .ok_or(ApiError::NotFound("User"))?;
+
+    audit::insert(
+        pool,
+        audit::Entry {
+            organization_id: Some(organization_id),
+            actor_user_id: Some(updated.id),
+            action: "profile_updated",
+            entity_type: "user",
+            entity_id: Some(updated.id),
+            metadata: json!({}),
+            ip_address: None,
+        },
+    )
+    .await?;
+
+    let roles = role::roles_for_user(pool, organization_id, updated.id)
+        .await?
+        .into_iter()
+        .map(|r| r.code)
+        .collect();
+    Ok(ApiResponse::success(ProfileResponse::new(updated, roles)))
+}
+
+/// `POST /v1/api/me/password` — verify, rehash, then revoke every other session.
+pub async fn change_password(
+    State(db): State<Arc<Database>>,
+    ctx: AuthContext,
+    Json(payload): Json<ChangePasswordRequest>,
+) -> Result<ApiResponse<serde_json::Value>, ApiError> {
+    let mut errors = Vec::new();
+    if payload.new_password.chars().count() < 8 {
+        errors.push(validation(
+            "new_password",
+            "too_short",
+            "Password must be at least 8 characters",
+        ));
+    }
+    if payload.new_password == payload.current_password {
+        errors.push(validation(
+            "new_password",
+            "unchanged",
+            "The new password must differ from the current one",
+        ));
+    }
+
+    let Some(current_hash) = ctx.user.password_hash.as_deref() else {
+        return Err(ApiError::Conflict(
+            "This account has no local password".to_string(),
+        ));
+    };
+    if !service::verify_password(&payload.current_password, current_hash) {
+        errors.push(validation(
+            "current_password",
+            "invalid",
+            "Current password is incorrect",
+        ));
+    }
+    if !errors.is_empty() {
+        return Err(ApiError::Validation(errors));
+    }
+
+    let password_hash =
+        service::hash_password(&payload.new_password).map_err(ApiError::Internal)?;
+    let pool = db.get_pool();
+    let organization_id = ctx.organization_id();
+    if !user::update_password(pool, organization_id, ctx.user.id, &password_hash).await? {
+        return Err(ApiError::NotFound("User"));
+    }
+    let revoked =
+        session::revoke_all_except(pool, organization_id, ctx.user.id, ctx.session.id).await?;
+
+    audit::insert(
+        pool,
+        audit::Entry {
+            organization_id: Some(organization_id),
+            actor_user_id: Some(ctx.user.id),
+            action: "password_changed",
+            entity_type: "user",
+            entity_id: Some(ctx.user.id),
+            metadata: json!({ "revoked_sessions": revoked }),
+            ip_address: None,
+        },
+    )
+    .await?;
+
+    Ok(ApiResponse::success_with_message(
+        json!({ "revoked_sessions": revoked }),
+        "Password updated; other sessions signed out",
+    ))
+}
+
+/// `DELETE /v1/api/me/sessions` — sign out every other device, keep this one.
+pub async fn revoke_other_sessions(
+    State(db): State<Arc<Database>>,
+    ctx: AuthContext,
+) -> Result<ApiResponse<serde_json::Value>, ApiError> {
+    let pool = db.get_pool();
+    let organization_id = ctx.organization_id();
+    let revoked =
+        session::revoke_all_except(pool, organization_id, ctx.user.id, ctx.session.id).await?;
+
+    audit::insert(
+        pool,
+        audit::Entry {
+            organization_id: Some(organization_id),
+            actor_user_id: Some(ctx.user.id),
+            action: "sessions_revoked",
+            entity_type: "user",
+            entity_id: Some(ctx.user.id),
+            metadata: json!({ "revoked": revoked, "except_current": true }),
+            ip_address: None,
+        },
+    )
+    .await?;
+
+    Ok(ApiResponse::success_with_message(
+        json!({ "revoked": revoked }),
+        "Other sessions revoked",
+    ))
 }

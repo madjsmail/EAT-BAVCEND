@@ -20,14 +20,14 @@ seed), `0003_core_lookups_assets.sql` (lookups, catalog, assets, custody),
 
 | Table | Constraints / rules |
 | --- | --- |
-| `organizations` | `slug` unique; soft-free (hard delete cascades all tenants data). |
+| `organizations` | `slug` unique; soft-free (hard delete cascades all tenants data); `default_locale IN ('en','fr','ar')` default `'en'`; `logo_object_key` nullable Garage S3 key (`{org_id}/logo/{org_id}/{uuid}-{file}`); `settings JSONB NOT NULL DEFAULT '{}'` merged with typed defaults (`asset_tag_prefix` `"EAT-"`, `asset_tag_padding` 4, `warranty_alert_days` 30, `license_alert_days` 30, `currency` `"USD"`, `require_handover_signature` false). Validation is enforced in code (padding 1–10, alert days 0–3650, currency `^[A-Z]{3}$`). |
 | `permissions` | Global, `code` unique (`assets.read`, `lookups.write`, ...). |
 | `roles` | `code` unique; `organization_id` NULL = system role shared by tenants; `is_system` marks seeded roles. |
 | `role_permissions` | PK `(role_id, permission_id)`. |
 | `users` | `email = lower(email)`; `UNIQUE (organization_id, email)`; `status IN ('invited','active','suspended','offboarded')`; `preferred_locale IN ('en','fr','ar')` default `'en'`; `location_id` FK → `locations` (home location, `ON DELETE SET NULL`); `department_id` FK → `departments` (`SET NULL`); `manager_id` self-FK (`SET NULL`, `CHECK (manager_id <> id)`); `employee_id` unique per org case-insensitively when non-blank; `deleted_at` soft delete; `email_verified_at` set on activation. |
 | `user_roles` | `UNIQUE (organization_id, user_id, role_id)`. |
 | `invitations` | `token_hash` unique (SHA-256 only); `status IN ('pending','accepted','expired','revoked')`; at most one `pending` row per `(organization_id, email)` via partial unique index. |
-| `sessions` | `token_hash` unique; `revoked_at` NULL = live; expiry checked in the auth extractor. |
+| `sessions` | `token_hash` unique; `revoked_at` NULL = live; expiry checked in the auth extractor; `last_seen_at` refreshed at most once per minute on authenticated requests. |
 | `audit_logs` | Append-only. `organization_id`/`actor_user_id` nullable (pre-auth/system events); `metadata JSONB`; indexed by `(organization_id, created_at DESC)`. |
 
 ## Lookups

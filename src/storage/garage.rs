@@ -19,6 +19,9 @@ use crate::error::api_error::ApiError;
 /// Signed download URLs stay valid for 15 minutes.
 const PRESIGN_TTL: Duration = Duration::from_secs(15 * 60);
 
+/// Exposed so upload-url responses can tell the client how long they have.
+pub const PRESIGN_TTL_SECONDS: u64 = 15 * 60;
+
 static CLIENT: OnceLock<Client> = OnceLock::new();
 
 fn env(name: &str) -> Result<String, ApiError> {
@@ -97,8 +100,23 @@ pub async fn put(key: &str, bytes: Vec<u8>, content_type: &str) -> Result<(), Ap
     Ok(())
 }
 
-pub async fn presigned_get(key: &str) -> Result<String, ApiError> {
+/// Presigned PUT for a direct browser upload. The content type is baked into
+/// the signature, so the client must send exactly the same header.
+pub async fn presigned_put(key: &str, content_type: &str) -> Result<String, ApiError> {
     let presigning = PresigningConfig::expires_in(PRESIGN_TTL)
+        .map_err(|e| ApiError::Internal(format!("Invalid presigning config: {e}")))?;
+    let request = client()?
+        .put_object()
+        .bucket(bucket()?)
+        .key(key)
+        .content_type(content_type)
+        .presigned(presigning)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Could not sign the upload URL: {e}")))?;
+    Ok(request.uri().to_string())
+}
+
+pub async fn presigned_get(key: &str) -> Result<String, ApiError> {    let presigning = PresigningConfig::expires_in(PRESIGN_TTL)
         .map_err(|e| ApiError::Internal(format!("Invalid presigning config: {e}")))?;
     let request = client()?
         .get_object()

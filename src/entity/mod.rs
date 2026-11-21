@@ -11,6 +11,9 @@ pub struct Organization {
     pub id: Uuid,
     pub name: String,
     pub slug: String,
+    pub default_locale: String,
+    pub logo_object_key: Option<String>,
+    pub settings: serde_json::Value,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -85,5 +88,6 @@ pub struct Session {
     pub user_agent: Option<String>,
     pub expires_at: DateTime<Utc>,
     pub revoked_at: Option<DateTime<Utc>>,
+    pub last_seen_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
 }

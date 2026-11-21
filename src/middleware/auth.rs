@@ -49,6 +49,11 @@ impl FromRequestParts<std::sync::Arc<Database>> for AuthContext {
         )
         .await?;
 
+        // Activity timestamp is best-effort: never block a valid request on it.
+        if let Err(e) = crate::repository::session::touch_last_seen(pool, session_row.id).await {
+            log::warn!("Could not refresh session last_seen_at: {e}");
+        }
+
         Ok(Self {
             user,
             session: session_row,

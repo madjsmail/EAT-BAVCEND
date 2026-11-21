@@ -71,6 +71,9 @@ erDiagram
         uuid id PK
         text name
         text slug UK
+        text default_locale "en|fr|ar, default 'en'"
+        text logo_object_key "Garage S3 key, nullable"
+        jsonb settings "defaults to '{}'"
         timestamptz created_at
         timestamptz updated_at
     }
@@ -147,6 +150,7 @@ erDiagram
         text user_agent
         timestamptz expires_at
         timestamptz revoked_at
+        timestamptz last_seen_at "throttled to once per minute"
         timestamptz created_at
     }
     auth_tokens {
