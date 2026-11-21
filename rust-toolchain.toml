@@ -1,0 +1,6 @@
+# rustc 1.100.0 ICEs/SIGSEGVs when codegen'ing this crate's test target
+# (`collect_and_partition_mono_items`, `Res::Err but no error emitted`).
+# 1.99.0 builds and tests cleanly; drop the pin once the compiler regression is fixed.
+[toolchain]
+channel = "1.99.0"
+profile = "minimal"
