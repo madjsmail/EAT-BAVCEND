@@ -633,3 +633,72 @@ Relationship rules (Milestone 5):
   assets in custody, open accessory assignments and live license seats.
 - Permissions added: `users.create`, `users.delete`, `users.import`,
   `users.offboard`; system role `employee` (read-only directory access).
+
+## Milestone 6 — schedule-driven work orders
+
+Migration: `20260101000008_maintenance_schedules_work_orders.sql`.
+
+```mermaid
+erDiagram
+    assets ||--o{ maintenance_schedules : "scheduled by"
+    maintenance_schedules ||--o{ work_orders : "generates"
+    assets ||--o{ work_orders : "has"
+    users ||--o{ work_orders : "assigned to"
+    work_orders ||--o{ work_order_events : "event log"
+    users ||--o{ work_order_events : "actor"
+    maintenance_schedules ||--o{ schedule_events : "event log"
+    users ||--o{ schedule_events : "actor"
+
+    maintenance_schedules {
+        uuid id PK
+        uuid asset_id FK
+        text frequency_type "days|months|operating_hours"
+        int interval
+        timestamptz next_due_at
+        numeric next_due_operating_hours
+        boolean is_active
+        text notes
+        timestamptz created_at
+        timestamptz updated_at
+    }
+    work_orders {
+        uuid id PK
+        uuid schedule_id FK
+        uuid asset_id FK
+        text type "preventive|corrective"
+        text status "open|in_progress|done"
+        uuid assigned_to FK
+        timestamptz due_date
+        timestamptz completed_at
+        numeric cost
+        text notes
+        timestamptz created_at
+        timestamptz updated_at
+    }
+    work_order_events {
+        uuid id PK
+        uuid work_order_id FK
+        text event_type
+        uuid actor_id FK
+        jsonb payload
+        timestamptz created_at
+    }
+    schedule_events {
+        uuid id PK
+        uuid schedule_id FK
+        text event_type
+        uuid actor_id FK
+        jsonb payload
+        timestamptz created_at
+    }
+```
+
+Relationship rules (Milestone 6):
+
+- Both new logs are append-only; a DB trigger raises on `UPDATE`/`DELETE`.
+- The daily scheduler creates one preventive work order per due window, guarded
+  by the partial unique index on `(schedule_id, due_date)`.
+- `days`/`months` advance `next_due_at`; `operating_hours` advances
+  `next_due_operating_hours` against `assets.current_operating_hours`.
+- `DELETE /maintenance-schedules/{id}` only sets `is_active = false` and writes a
+  `schedule_deactivated` event.

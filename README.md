@@ -65,6 +65,9 @@ APP_URL=127.0.0.1
 APP_PORT=8000
 
 DATABASE_URL=postgres://appuser:change_me_postgres_pass@localhost:5432/appdb
+
+# Daily preventive-maintenance sweep (6-field cron; default shown).
+MAINTENANCE_CRON=0 0 6 * * *
 ```
 
 ### 3️⃣ Run the application

@@ -103,3 +103,149 @@ pub struct MaintenanceResponse {
 }
 
 pub type MaintenanceListResponse = Vec<MaintenanceResponse>;
+
+// ------------------------------------------------ schedule-driven workflow ----
+
+#[derive(Debug, Deserialize)]
+pub struct WorkOrderListQuery {
+    pub status: Option<String>,
+    pub asset_id: Option<Uuid>,
+    pub assigned_to: Option<Uuid>,
+    #[serde(rename = "type")]
+    pub work_order_type: Option<String>,
+    pub page: Option<u32>,
+    pub per_page: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateWorkOrderRequest {
+    pub asset_id: Uuid,
+    #[serde(rename = "type")]
+    pub work_order_type: String,
+    pub notes: Option<String>,
+    pub due_date: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateWorkOrderRequest {
+    #[serde(default, deserialize_with = "double_option")]
+    pub assigned_to: Option<Option<Uuid>>,
+    pub status: Option<String>,
+    pub cost: Option<Decimal>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub notes: Option<Option<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AddWorkOrderEventRequest {
+    pub note: Option<String>,
+    pub payload: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ReportBreakdownRequest {
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AssetRef {
+    pub id: Uuid,
+    pub name: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct WorkOrderBoardItem {
+    pub id: Uuid,
+    pub asset: AssetRef,
+    #[serde(rename = "type")]
+    pub work_order_type: String,
+    pub status: String,
+    pub assigned_to: Option<Uuid>,
+    pub due_date: Option<DateTime<Utc>>,
+    pub cost: Option<Decimal>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct WorkOrderEventResponse {
+    pub id: Uuid,
+    pub event_type: String,
+    pub actor_id: Option<Uuid>,
+    pub actor_name: Option<String>,
+    pub payload: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct WorkOrderDetailResponse {
+    pub id: Uuid,
+    pub schedule_id: Option<Uuid>,
+    pub asset: AssetRef,
+    #[serde(rename = "type")]
+    pub work_order_type: String,
+    pub status: String,
+    pub assigned_to: Option<Uuid>,
+    pub assigned_to_name: Option<String>,
+    pub due_date: Option<DateTime<Utc>>,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub cost: Option<Decimal>,
+    pub notes: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub events: Vec<WorkOrderEventResponse>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateMaintenanceScheduleRequest {
+    pub frequency_type: String,
+    pub interval: i32,
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateMaintenanceScheduleRequest {
+    pub interval: Option<i32>,
+    pub is_active: Option<bool>,
+    pub next_due_at: Option<DateTime<Utc>>,
+    pub next_due_operating_hours: Option<Decimal>,
+    #[serde(default, deserialize_with = "double_option")]
+    pub notes: Option<Option<String>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MaintenanceScheduleResponse {
+    pub id: Uuid,
+    pub asset_id: Uuid,
+    pub frequency_type: String,
+    pub interval: i32,
+    pub next_due_at: Option<DateTime<Utc>>,
+    pub next_due_operating_hours: Option<Decimal>,
+    pub is_active: bool,
+    pub notes: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MaintenanceHistoryQuery {
+    /// Return items strictly older than this timestamp (RFC 3339).
+    pub cursor: Option<DateTime<Utc>>,
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MaintenanceHistoryItem {
+    pub occurred_at: DateTime<Utc>,
+    pub kind: String,
+    pub work_order_id: Option<Uuid>,
+    pub schedule_id: Option<Uuid>,
+    pub summary: String,
+    pub payload: serde_json::Value,
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct SchedulerRunSummary {
+    pub generated: usize,
+    pub skipped: usize,
+    pub errors: usize,
+}

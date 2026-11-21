@@ -248,3 +248,282 @@ pub async fn delete_maintenance(
         "Maintenance ticket deleted",
     ))
 }
+
+// ------------------------------------------------ schedule-driven workflow ----
+
+fn work_order_board_item(row: repo::WorkOrderRow) -> WorkOrderBoardItem {
+    WorkOrderBoardItem {
+        id: row.id,
+        asset: AssetRef {
+            id: row.asset_id,
+            name: row.asset_name,
+        },
+        work_order_type: row.work_order_type,
+        status: row.status,
+        assigned_to: row.assigned_to,
+        due_date: row.due_date,
+        cost: row.cost,
+        created_at: row.created_at,
+    }
+}
+
+fn work_order_event_response(row: repo::WorkOrderEventRow) -> WorkOrderEventResponse {
+    WorkOrderEventResponse {
+        id: row.id,
+        event_type: row.event_type,
+        actor_id: row.actor_id,
+        actor_name: row.actor_name,
+        payload: row.payload,
+        created_at: row.created_at,
+    }
+}
+
+fn work_order_detail_response(
+    row: repo::WorkOrderRow,
+    events: Vec<repo::WorkOrderEventRow>,
+) -> WorkOrderDetailResponse {
+    WorkOrderDetailResponse {
+        id: row.id,
+        schedule_id: row.schedule_id,
+        asset: AssetRef {
+            id: row.asset_id,
+            name: row.asset_name,
+        },
+        work_order_type: row.work_order_type,
+        status: row.status,
+        assigned_to: row.assigned_to,
+        assigned_to_name: row.assigned_to_name,
+        due_date: row.due_date,
+        completed_at: row.completed_at,
+        cost: row.cost,
+        notes: row.notes,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+        events: events.into_iter().map(work_order_event_response).collect(),
+    }
+}
+
+fn schedule_response(row: repo::MaintenanceScheduleRow) -> MaintenanceScheduleResponse {
+    MaintenanceScheduleResponse {
+        id: row.id,
+        asset_id: row.asset_id,
+        frequency_type: row.frequency_type,
+        interval: row.interval,
+        next_due_at: row.next_due_at,
+        next_due_operating_hours: row.next_due_operating_hours,
+        is_active: row.is_active,
+        notes: row.notes,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+    }
+}
+
+async fn load_work_order_detail(
+    pool: &sqlx::PgPool,
+    org: Uuid,
+    id: Uuid,
+) -> Result<WorkOrderDetailResponse, ApiError> {
+    let row = repo::get_work_order(pool, org, id).await?;
+    let events = repo::list_work_order_events(pool, org, id).await?;
+    Ok(work_order_detail_response(row, events))
+}
+
+pub async fn list_work_orders(
+    State(db): State<Arc<Database>>,
+    ctx: AuthContext,
+    Query(query): Query<WorkOrderListQuery>,
+) -> Result<ApiResponse<Vec<WorkOrderBoardItem>>, ApiError> {
+    let page = query.page.unwrap_or(1).max(1);
+    let per_page = query.per_page.unwrap_or(25).clamp(1, 100);
+    let (rows, total) =
+        repo::list_work_orders(db.get_pool(), ctx.organization_id(), &query, page, per_page)
+            .await?;
+    Ok(ApiResponse::paginated(
+        rows.into_iter().map(work_order_board_item).collect(),
+        page,
+        per_page,
+        total as u64,
+    ))
+}
+
+pub async fn get_work_order(
+    State(db): State<Arc<Database>>,
+    ctx: AuthContext,
+    Path(id): Path<Uuid>,
+) -> Result<ApiResponse<WorkOrderDetailResponse>, ApiError> {
+    let detail = load_work_order_detail(db.get_pool(), ctx.organization_id(), id).await?;
+    Ok(ApiResponse::success(detail))
+}
+
+pub async fn create_work_order(
+    State(db): State<Arc<Database>>,
+    ctx: AuthContext,
+    Json(payload): Json<CreateWorkOrderRequest>,
+) -> Result<ApiResponse<WorkOrderDetailResponse>, ApiError> {
+    let row = repo::create_work_order(db.get_pool(), ctx.organization_id(), ctx.user.id, &payload)
+        .await?;
+    let detail = load_work_order_detail(db.get_pool(), ctx.organization_id(), row.id).await?;
+    Ok(ApiResponse::success_with_message(
+        detail,
+        "Work order created",
+    ))
+}
+
+pub async fn update_work_order(
+    State(db): State<Arc<Database>>,
+    ctx: AuthContext,
+    Path(id): Path<Uuid>,
+    Json(payload): Json<UpdateWorkOrderRequest>,
+) -> Result<ApiResponse<WorkOrderDetailResponse>, ApiError> {
+    if payload.status.as_deref() == Some("done") {
+        let current = repo::get_work_order(db.get_pool(), ctx.organization_id(), id).await?;
+        let assigned = current.assigned_to == Some(ctx.user.id);
+        let admin = repo::is_admin(db.get_pool(), ctx.organization_id(), ctx.user.id).await?;
+        if !assigned && !admin {
+            return Err(ApiError::Forbidden(
+                "only the assignee or an administrator can complete this work order".to_string(),
+            ));
+        }
+    }
+
+    let row = repo::update_work_order(
+        db.get_pool(),
+        ctx.organization_id(),
+        ctx.user.id,
+        id,
+        &payload,
+    )
+    .await?;
+    let detail = load_work_order_detail(db.get_pool(), ctx.organization_id(), row.id).await?;
+    Ok(ApiResponse::success(detail))
+}
+
+pub async fn add_work_order_event(
+    State(db): State<Arc<Database>>,
+    ctx: AuthContext,
+    Path(id): Path<Uuid>,
+    Json(payload): Json<AddWorkOrderEventRequest>,
+) -> Result<ApiResponse<WorkOrderEventResponse>, ApiError> {
+    let event = repo::add_work_order_note(
+        db.get_pool(),
+        ctx.organization_id(),
+        ctx.user.id,
+        id,
+        &payload,
+    )
+    .await?;
+    Ok(ApiResponse::success_with_message(
+        work_order_event_response(event),
+        "Work order event added",
+    ))
+}
+
+pub async fn report_breakdown(
+    State(db): State<Arc<Database>>,
+    ctx: AuthContext,
+    Path(asset_id): Path<Uuid>,
+    Json(payload): Json<ReportBreakdownRequest>,
+) -> Result<ApiResponse<WorkOrderDetailResponse>, ApiError> {
+    let row = repo::report_breakdown(
+        db.get_pool(),
+        ctx.organization_id(),
+        ctx.user.id,
+        asset_id,
+        payload.notes,
+    )
+    .await?;
+    let detail = load_work_order_detail(db.get_pool(), ctx.organization_id(), row.id).await?;
+    Ok(ApiResponse::success_with_message(
+        detail,
+        "Breakdown reported",
+    ))
+}
+
+pub async fn list_maintenance_schedules(
+    State(db): State<Arc<Database>>,
+    ctx: AuthContext,
+    Path(asset_id): Path<Uuid>,
+) -> Result<ApiResponse<Vec<MaintenanceScheduleResponse>>, ApiError> {
+    let rows = repo::list_schedules(db.get_pool(), ctx.organization_id(), asset_id).await?;
+    Ok(ApiResponse::success(
+        rows.into_iter().map(schedule_response).collect(),
+    ))
+}
+
+pub async fn create_maintenance_schedule(
+    State(db): State<Arc<Database>>,
+    ctx: AuthContext,
+    Path(asset_id): Path<Uuid>,
+    Json(payload): Json<CreateMaintenanceScheduleRequest>,
+) -> Result<ApiResponse<MaintenanceScheduleResponse>, ApiError> {
+    let row = repo::create_schedule(
+        db.get_pool(),
+        ctx.organization_id(),
+        ctx.user.id,
+        asset_id,
+        &payload,
+    )
+    .await?;
+    Ok(ApiResponse::success_with_message(
+        schedule_response(row),
+        "Maintenance schedule created",
+    ))
+}
+
+pub async fn update_maintenance_schedule(
+    State(db): State<Arc<Database>>,
+    ctx: AuthContext,
+    Path(id): Path<Uuid>,
+    Json(payload): Json<UpdateMaintenanceScheduleRequest>,
+) -> Result<ApiResponse<MaintenanceScheduleResponse>, ApiError> {
+    let row = repo::update_schedule(
+        db.get_pool(),
+        ctx.organization_id(),
+        ctx.user.id,
+        id,
+        &payload,
+    )
+    .await?;
+    Ok(ApiResponse::success(schedule_response(row)))
+}
+
+pub async fn deactivate_maintenance_schedule(
+    State(db): State<Arc<Database>>,
+    ctx: AuthContext,
+    Path(id): Path<Uuid>,
+) -> Result<ApiResponse<String>, ApiError> {
+    repo::deactivate_schedule(db.get_pool(), ctx.organization_id(), ctx.user.id, id).await?;
+    Ok(ApiResponse::success_with_message(
+        id.to_string(),
+        "Maintenance schedule deactivated",
+    ))
+}
+
+pub async fn maintenance_history(
+    State(db): State<Arc<Database>>,
+    ctx: AuthContext,
+    Path(asset_id): Path<Uuid>,
+    Query(query): Query<MaintenanceHistoryQuery>,
+) -> Result<ApiResponse<Vec<MaintenanceHistoryItem>>, ApiError> {
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let items = repo::maintenance_history(
+        db.get_pool(),
+        ctx.organization_id(),
+        asset_id,
+        query.cursor,
+        limit,
+    )
+    .await?;
+    let next_cursor = if items.len() == limit as usize {
+        items.last().map(|item| item.occurred_at.to_rfc3339())
+    } else {
+        None
+    };
+    Ok(ApiResponse::paginated_with_cursor(
+        items,
+        1,
+        limit,
+        limit as u64,
+        next_cursor,
+    ))
+}
