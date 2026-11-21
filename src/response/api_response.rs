@@ -26,6 +26,8 @@ pub struct Pagination {
     pub per_page: u32,
     pub total: u64,
     pub total_pages: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -73,6 +75,24 @@ impl<T: Serialize> ApiResponse<T> {
         }
     }
 
+    /// Success response for a cursor-paginated list.
+    pub fn paginated_with_cursor(
+        data: Vec<T>,
+        page: u32,
+        per_page: u32,
+        total: u64,
+        next_cursor: Option<String>,
+    ) -> ApiResponse<Vec<T>> {
+        ApiResponse {
+            error: false,
+            status: 200,
+            data: Some(data),
+            pagination: Some(Pagination::with_cursor(page, per_page, total, next_cursor)),
+            error_stack: None,
+            message: "success".to_string(),
+        }
+    }
+
     /// Error response. `error_stack` carries the per-field/per-cause details.
     pub fn error(status: u16, message: impl Into<String>, error_stack: Vec<ErrorDetail>) -> Self {
         Self {
@@ -95,6 +115,10 @@ impl<T: Serialize> IntoResponse for ApiResponse<T> {
 
 impl Pagination {
     pub fn new(page: u32, per_page: u32, total: u64) -> Self {
+        Self::with_cursor(page, per_page, total, None)
+    }
+
+    pub fn with_cursor(page: u32, per_page: u32, total: u64, next_cursor: Option<String>) -> Self {
         let per_page = per_page.max(1);
         let total_pages = total.div_ceil(per_page as u64) as u32;
         Self {
@@ -102,6 +126,7 @@ impl Pagination {
             per_page,
             total,
             total_pages,
+            next_cursor,
         }
     }
 }

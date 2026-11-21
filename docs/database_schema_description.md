@@ -2,7 +2,8 @@
 
 Companion to `database_schema_mermaid_erd.md`. Migrations:
 `0001_init.sql` (identity/RBAC/audit), `0002_seed_rbac.sql` (permission + role
-seed), `0003_core_lookups_assets.sql` (lookups, catalog, assets, custody).
+seed), `0003_core_lookups_assets.sql` (lookups, catalog, assets, custody),
+… `0008_maintenance_schedules_work_orders.sql` (schedule-driven work orders).
 
 ## Conventions
 
@@ -97,6 +98,7 @@ No code. `contact_name`, `email`, `phone_number`, `address`, `url`, `notes`.
 | `warranty_date`, `purchase_date` | `DATE` nullable. |
 | `purchase_cost` | `NUMERIC(14,2) >= 0`; `currency` `^[A-Z]{3}$` default `USD`. |
 | `schedule_audit` | `TIMESTAMPTZ` nullable = next scheduled audit. |
+| `current_operating_hours` | `NUMERIC >= 0`, default 0; drives operating-hour maintenance schedules. |
 | `mdm_enrolled` | BOOLEAN default FALSE. |
 | `order_number`, `notes`, `image_url` | Optional text. |
 
@@ -364,3 +366,69 @@ system `employee` role. Legacy `.xls` files are rejected with a 400.
 `users.create`, `users.delete`, `users.import`, `users.offboard`. Admin: all;
 manager: create/import/offboard. System role `employee`: `organizations.read`,
 `users.read`.
+
+## Schedule-driven work orders (Milestone 6)
+
+Migration: `20260101000008_maintenance_schedules_work_orders.sql`.
+
+The legacy `asset_maintenances` ticket flow is unchanged; these tables are
+additive. Tenant isolation is enforced through the owning `assets` row
+(`JOIN assets a ON a.id = … WHERE a.organization_id = $1`).
+
+### `maintenance_schedules`
+
+| Column | Rules |
+| --- | --- |
+| `asset_id` | NOT NULL FK → `assets` `ON DELETE CASCADE`. |
+| `frequency_type` | `days`, `months`, `operating_hours`. |
+| `interval` | `INTEGER > 0`; units depend on `frequency_type`. |
+| `next_due_at` | Required for `days`/`months`; `NULL` for operating-hour schedules. |
+| `next_due_operating_hours` | Required for `operating_hours`; `NUMERIC`. |
+| `is_active` | BOOLEAN default TRUE; `DELETE` is a soft deactivate. |
+| `notes` | Optional text. |
+
+Index `(is_active, next_due_at)` powers the cron sweep; `(asset_id,
+created_at DESC)` powers the asset detail view. `days`/`months` advance with
+calendar arithmetic (chrono clamps month-end: Jan 31 + 1 month = Feb 28/29).
+
+### `work_orders`
+
+| Column | Rules |
+| --- | --- |
+| `schedule_id` | Optional FK → `maintenance_schedules` `ON DELETE SET NULL`. |
+| `asset_id` | NOT NULL FK → `assets` `ON DELETE CASCADE`. |
+| `type` | `preventive`, `corrective`. |
+| `status` | `open` (default), `in_progress`, `done`. |
+| `assigned_to` | Optional FK → `users` `ON DELETE SET NULL`. |
+| `due_date` | `TIMESTAMPTZ`; scheduler sets it to the schedule's due marker. |
+| `completed_at` | Set when status becomes `done`; `cost` is required for that transition. |
+| `cost` | `NUMERIC(12,2) >= 0`. |
+| `notes` | Optional text. |
+
+Indexes: `(asset_id, created_at DESC)`, `(status, due_date)`,
+`(assigned_to, status)`, and partial unique
+`(schedule_id, due_date) WHERE schedule_id IS NOT NULL AND status <> 'done'`
+to prevent duplicate live preventive work orders.
+
+### `work_order_events` / `schedule_events`
+
+Append-only event logs (`UPDATE`/`DELETE` raise a DB exception).
+
+- `work_order_events.event_type IN ('created','assigned','status_changed',
+  'cost_recorded','note_added','completed')`; `payload JSONB` stores the
+  snapshot (e.g. `{"from":"open","to":"in_progress"}`); `actor_id` is NULL for
+  scheduler events.
+- `schedule_events.event_type IN ('schedule_created','schedule_updated',
+  'schedule_advanced','schedule_deactivated')`.
+- Every work-order mutation writes its event in the same transaction as the row
+  change. The daily scheduler locks each due schedule with `FOR UPDATE`, creates
+  at most one work order per due window, writes `created` + `schedule_advanced`,
+  and logs `{generated, skipped, errors}`.
+
+### API surface added
+
+`GET/POST /work-orders`, `GET/PATCH /work-orders/{id}`,
+`POST /work-orders/{id}/events`, `POST /assets/{id}/report-breakdown`,
+`GET/POST /assets/{id}/maintenance-schedules`,
+`PATCH/DELETE /maintenance-schedules/{id}`,
+`GET /assets/{id}/maintenance-history` (cursor on `occurred_at`).

@@ -3,6 +3,7 @@ use std::process::exit;
 use log::{error, info};
 use tokio::net::TcpListener;
 use tokio::signal;
+use tokio_cron_scheduler::{Job, JobScheduler};
 
 use rust_api::config::database::{Database, DatabaseTrait};
 use rust_api::config::parameter;
@@ -52,6 +53,40 @@ async fn main() {
         }
         return;
     }
+
+    // Daily preventive-maintenance sweep. `run_once` is also public so tests
+    // and operators can trigger a sweep without waiting for the cron tick.
+    let maintenance_cron =
+        std::env::var("MAINTENANCE_CRON").unwrap_or_else(|_| "0 0 6 * * *".to_string());
+    let _maintenance_scheduler = match JobScheduler::new().await {
+        Ok(scheduler) => {
+            let pool = db_connection.get_pool().clone();
+            match Job::new_async(maintenance_cron.as_str(), move |_uuid, _lock| {
+                let pool = pool.clone();
+                Box::pin(async move {
+                    if let Err(e) = rust_api::modules::maintenances::run_once(&pool).await {
+                        error!("Maintenance scheduler run failed: {e}");
+                    }
+                })
+            }) {
+                Ok(job) => {
+                    if let Err(e) = scheduler.add(job).await {
+                        error!("Failed to register maintenance scheduler: {e}");
+                    } else if let Err(e) = scheduler.start().await {
+                        error!("Failed to start maintenance scheduler: {e}");
+                    } else {
+                        info!("Maintenance scheduler started with cron '{maintenance_cron}'");
+                    }
+                }
+                Err(e) => error!("Invalid MAINTENANCE_CRON '{maintenance_cron}': {e}"),
+            }
+            Some(scheduler)
+        }
+        Err(e) => {
+            error!("Failed to create maintenance scheduler: {e}");
+            None
+        }
+    };
 
     let app_url = parameter::get("APP_URL").unwrap_or_else(|e| {
         error!("{}", e);
