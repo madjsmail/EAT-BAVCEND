@@ -747,6 +747,23 @@ pub struct WorkOrderEventRow {
     pub created_at: DateTime<Utc>,
 }
 
+/// Legacy ticket rows surfaced in the asset history timeline. Legacy tickets
+/// have no event log, so their state timestamps are turned into events.
+#[derive(Debug, FromRow)]
+struct LegacyTicketRow {
+    id: Uuid,
+    title: String,
+    maintenance_type: String,
+    status: String,
+    priority: String,
+    cost: Option<Decimal>,
+    currency: String,
+    created_at: DateTime<Utc>,
+    started_at: Option<DateTime<Utc>>,
+    completed_at: Option<DateTime<Utc>>,
+    updated_at: DateTime<Utc>,
+}
+
 #[derive(Debug, FromRow)]
 pub struct ScheduleEventRow {
     pub id: Uuid,
@@ -1675,6 +1692,10 @@ fn history_kind_rank(kind: &str) -> u8 {
         "assigned" => 3,
         "note_added" => 4,
         "work_order_created" => 5,
+        "maintenance_completed" => 5,
+        "maintenance_cancelled" => 5,
+        "maintenance_started" => 5,
+        "maintenance_created" => 5,
         "schedule_advanced" => 6,
         "schedule_updated" => 7,
         "schedule_deactivated" => 8,
@@ -1726,6 +1747,21 @@ pub async fn maintenance_history(
     if !exists {
         return Err(ApiError::NotFound("Asset"));
     }
+
+    let legacy_tickets = sqlx::query_as::<_, LegacyTicketRow>(
+        r#"
+        SELECT m.id, m.title, m.maintenance_type, m.status, m.priority,
+               m.cost, m.currency, m.created_at, m.started_at, m.completed_at,
+               m.updated_at
+        FROM asset_maintenances m
+        WHERE m.organization_id = $1 AND m.asset_id = $2
+        ORDER BY m.created_at ASC, m.id ASC
+        "#,
+    )
+    .bind(org)
+    .bind(asset_id)
+    .fetch_all(pool)
+    .await?;
 
     let work_order_sql = format!("{WORK_ORDER_SELECT} AND w.asset_id = $2");
     let work_orders = sqlx::query_as::<_, WorkOrderRow>(&work_order_sql)
@@ -1809,6 +1845,58 @@ pub async fn maintenance_history(
             summary: schedule_event_summary(&event.event_type),
             payload: event.payload,
         });
+    }
+
+    // Legacy `asset_maintenances` tickets keep their own (ended) lifecycle and
+    // have no event table; derive timeline entries from their state columns so
+    // the asset history is not empty after a ticket is filed.
+    for ticket in legacy_tickets {
+        let payload = serde_json::json!({
+            "ticket_id": ticket.id,
+            "title": ticket.title,
+            "maintenance_type": ticket.maintenance_type,
+            "status": ticket.status,
+            "priority": ticket.priority,
+            "cost": ticket.cost,
+            "currency": ticket.currency,
+        });
+        items.push(MaintenanceHistoryItem {
+            occurred_at: ticket.created_at,
+            kind: "maintenance_created".to_string(),
+            work_order_id: None,
+            schedule_id: None,
+            summary: format!("Maintenance ticket created: {}", ticket.title),
+            payload: payload.clone(),
+        });
+        if let Some(started_at) = ticket.started_at {
+            items.push(MaintenanceHistoryItem {
+                occurred_at: started_at,
+                kind: "maintenance_started".to_string(),
+                work_order_id: None,
+                schedule_id: None,
+                summary: format!("Maintenance ticket started: {}", ticket.title),
+                payload: payload.clone(),
+            });
+        }
+        if let Some(completed_at) = ticket.completed_at {
+            items.push(MaintenanceHistoryItem {
+                occurred_at: completed_at,
+                kind: "maintenance_completed".to_string(),
+                work_order_id: None,
+                schedule_id: None,
+                summary: format!("Maintenance ticket completed: {}", ticket.title),
+                payload: payload.clone(),
+            });
+        } else if ticket.status == "cancelled" {
+            items.push(MaintenanceHistoryItem {
+                occurred_at: ticket.updated_at,
+                kind: "maintenance_cancelled".to_string(),
+                work_order_id: None,
+                schedule_id: None,
+                summary: format!("Maintenance ticket cancelled: {}", ticket.title),
+                payload: payload.clone(),
+            });
+        }
     }
 
     if let Some(cursor) = cursor {

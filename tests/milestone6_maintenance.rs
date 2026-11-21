@@ -149,6 +149,21 @@ async fn schedule_to_completed_work_order_timeline(pool: PgPool) {
     assert_eq!(status, StatusCode::OK, "{asset}");
     let asset_id = asset["data"]["id"].as_str().unwrap().to_string();
 
+    // Legacy ticket flow must also surface in the asset history timeline.
+    let (status, ticket) = call(
+        &app,
+        "POST",
+        "/v1/api/maintenances",
+        Some(&t.token),
+        Some(json!({
+            "asset_id": asset_id,
+            "title": "Cracked screen",
+            "maintenance_type": "corrective",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{ticket}");
+
     let (status, schedule) = call(
         &app,
         "POST",
@@ -256,6 +271,7 @@ async fn schedule_to_completed_work_order_timeline(pool: PgPool) {
         .map(|event| event["kind"].as_str().unwrap_or_default())
         .collect();
     for expected in [
+        "maintenance_created",
         "work_order_created",
         "assigned",
         "status_changed",
