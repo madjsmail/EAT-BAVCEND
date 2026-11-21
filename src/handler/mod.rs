@@ -552,6 +552,13 @@ pub async fn create_invitation(
     )
     .await?;
 
+    let invite_link = format!("{}/invite/{token}", invite_base_url().trim_end_matches('/'));
+    // The raw token is returned once to the caller; also print it locally so a
+    // developer can copy it from the terminal without scraping the JSON body.
+    log::info!("Invitation created for {email}: {invite_link}");
+    println!("invite_token={token}");
+    println!("invite_link={invite_link}");
+
     Ok(ApiResponse::success(InvitationResponse {
         id: created.id,
         email: created.email,
@@ -559,7 +566,7 @@ pub async fn create_invitation(
         role_code: role.code,
         status: created.status,
         expires_at: created.expires_at,
-        invite_link: format!("{}/invite/{token}", invite_base_url().trim_end_matches('/')),
+        invite_link,
     }))
 }
 
